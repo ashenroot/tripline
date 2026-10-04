@@ -1,0 +1,11 @@
+[Unit]
+Description=Kismet
+After=network.target bluetooth.target
+
+[Service]
+User=youruser
+ExecStart=/usr/bin/kismet --no-ncurses
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+# One device per line: MAC address, then an optional label.
+aa:bb:cc:dd:ee:01 Living room TV
+aa-bb-cc-dd-ee-02 Thermostat
+AABBCCDDEE03

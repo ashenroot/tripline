@@ -1,0 +1,8 @@
+# Real credentials and alert topic live here, never in the repo
+config.ini
+*.db
+*.db-journal
+*.kismet
+*.pcapng
+__pycache__/
+*.pyc

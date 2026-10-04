@@ -1,0 +1,830 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WUDS2</title>
+<style>
+:root{
+  --bg:#070b10; --panel:#0d141c; --panel2:#101a25; --line:#1b2a3a; --text:#d6e2ee; --dim:#7d92a8;
+  --accent:#35e0c2; --amber:#ffb020; --red:#ff4d5e; --green:#3ddc84; --blue:#6e96be; --bt:#6fb7ff;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box}
+html{color-scheme:dark}
+body{margin:0;min-height:100vh;color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  background:radial-gradient(1100px 560px at 75% -10%,#10263a 0%,var(--bg) 62%) fixed}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+.dim{color:var(--dim)}
+.mono{font-family:var(--mono)}
+
+header{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;
+  padding:10px 14px;background:rgba(7,11,16,.88);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.logo{font-family:var(--mono);font-weight:700;letter-spacing:.14em;color:var(--accent);text-shadow:0 0 14px rgba(53,224,194,.55)}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border:1px solid var(--line);border-radius:999px;
+  font-family:var(--mono);font-size:12px;color:var(--dim);background:var(--panel)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--dim)}
+.dot.ok{background:var(--green);box-shadow:0 0 8px var(--green)}
+.dot.bad{background:var(--red);box-shadow:0 0 8px var(--red)}
+.dot.warn{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+.spacer{flex:1}
+nav{display:flex;gap:4px}
+nav button{background:none;border:1px solid transparent;border-radius:8px;padding:5px 12px;color:var(--dim)}
+nav button[aria-selected=true]{color:var(--accent);border-color:var(--line);background:var(--panel)}
+#clock{font-family:var(--mono);color:var(--dim)}
+
+main{max-width:1280px;margin:0 auto;padding:14px}
+.grid{display:grid;gap:14px}
+@media(min-width:980px){.grid{grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)}.span2{grid-column:1/-1}}
+.col{display:grid;gap:14px;align-content:start}
+.card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:14px;padding:14px;
+  box-shadow:0 0 0 1px rgba(53,224,194,.03),0 12px 30px rgba(0,0,0,.35)}
+.card h2{margin:0 0 10px;font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
+
+.radar-wrap{position:relative;width:100%;max-width:640px;margin:0 auto;aspect-ratio:1}
+#radar{width:100%;height:100%;display:block;touch-action:manipulation}
+.tl-wrap{position:relative;width:100%;height:340px}
+#timeline{width:100%;height:100%;display:block;touch-action:manipulation}
+@media(max-width:600px){.tl-wrap{height:290px}}
+.tip{position:absolute;pointer-events:none;z-index:3;display:none;white-space:pre;padding:6px 9px;border-radius:8px;
+  background:rgba(7,11,16,.95);border:1px solid var(--line);font:12px/1.4 var(--mono);color:var(--text);max-width:260px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;justify-content:center;margin-top:8px;font-size:12px;color:var(--dim)}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.note{margin:8px 0 0;text-align:center;font-size:12px;color:var(--dim)}
+
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;min-width:0}
+.tile .k{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+.tile .v{margin-top:4px;font:700 28px/1.1 var(--mono);text-shadow:0 0 16px currentColor}
+.tile .s{margin-top:4px;font-size:12px;color:var(--dim);overflow-wrap:anywhere}
+.bar{position:relative;height:6px;margin-top:8px;border-radius:4px;background:#17222f;overflow:visible}
+.bar>.fill{height:100%;border-radius:4px;background:var(--accent);transition:width .6s}
+.bar>.mark{position:absolute;top:-3px;width:2px;height:12px;background:var(--amber)}
+.c-accent{color:var(--accent)}.c-amber{color:var(--amber)}.c-red{color:var(--red)}.c-green{color:var(--green)}.c-blue{color:var(--bt)}
+
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.row+.row{margin-top:10px}
+.btn{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:7px 12px;transition:border-color .15s,background .15s}
+.btn:hover{border-color:var(--accent)}
+.btn[aria-pressed=true]{border-color:var(--accent);color:var(--accent);background:rgba(53,224,194,.08)}
+.btn.primary{border-color:var(--accent);color:var(--accent)}
+.btn.danger:hover{border-color:var(--red);color:var(--red)}
+.btn:disabled{opacity:.4;cursor:default}
+.lbl{min-width:46px;font-size:12px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase}
+input[type=text],input[type=search],select{background:#0a1118;border:1px solid var(--line);border-radius:9px;padding:7px 10px;min-width:0}
+input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+.feed{max-height:340px;overflow:auto;display:grid;gap:6px}
+.item{border-left:3px solid var(--line);background:var(--panel);border-radius:0 8px 8px 0;padding:6px 10px}
+.item .t{font:12px var(--mono);color:var(--dim)}
+.item .h{font-weight:600}
+.item .x{font-size:12px;color:var(--dim);overflow-wrap:anywhere}
+.item.alert{border-color:var(--red)}.item.new{border-color:var(--amber)}.item.newknown{border-color:var(--green)}
+
+#activity{width:100%;height:170px;display:block}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px}
+.kv span:nth-child(odd){color:var(--dim)}
+.kv span:nth-child(even){font-family:var(--mono);overflow-wrap:anywhere}
+#spark{width:100%;height:64px;display:block;margin:10px 0}
+
+.tablewrap{overflow:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{position:sticky;top:0;text-align:left;padding:8px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);background:var(--panel2);border-bottom:1px solid var(--line)}
+td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+td.mac{font-family:var(--mono);font-size:12px}
+td input{width:150px}
+.hidden,[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">WUDS2</span>
+  <span class="pill"><span class="dot" id="d-sensor"></span><span id="t-sensor">connecting</span></span>
+  <span class="pill" id="p-guest" hidden></span>
+  <span class="spacer"></span>
+  <nav role="tablist">
+    <button role="tab" id="tab-dash" aria-selected="true">Dashboard</button>
+    <button role="tab" id="tab-dev" aria-selected="false">Devices</button>
+  </nav>
+  <span id="clock"></span>
+</header>
+
+<main>
+<section id="view-dash" class="grid">
+  <div class="col">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:10px">
+        <h2 id="view-title" style="margin:0">Signal timeline</h2>
+        <div class="row" style="margin:0">
+          <button class="btn" id="v-tl" aria-pressed="true">Timeline</button>
+          <button class="btn" id="v-rd" aria-pressed="false">Radar</button>
+        </div>
+      </div>
+      <div class="row" id="filters" style="margin-bottom:10px">
+        <span class="lbl">Show</span>
+        <button class="btn" id="chip-known" aria-pressed="false">Known <span class="dim" id="n-known"></span></button>
+        <button class="btn" id="chip-rand" aria-pressed="false">Rotating <span class="dim" id="n-rand"></span></button>
+      </div>
+      <div class="tl-wrap" id="wrap-tl">
+        <canvas id="timeline" aria-label="Signal strength over the last 10 minutes, one trace per device"></canvas>
+        <div class="tip" id="tip3"></div>
+      </div>
+      <div class="radar-wrap hidden" id="wrap-radar">
+        <canvas id="radar" aria-label="Radar showing nearby wireless devices by signal strength"></canvas>
+        <div class="tip" id="tip"></div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--red)"></i>unknown, past alert floor</span>
+        <span><i style="background:var(--amber)"></i>unknown</span>
+        <span><i style="background:var(--green)"></i>known</span>
+        <span><i style="background:var(--blue)"></i>rotating address</span>
+      </div>
+      <p class="note" id="view-note"></p>
+    </div>
+    <div class="card">
+      <h2>Selected device</h2>
+      <div id="sel"><span class="dim">Tap a blip to inspect a device.</span></div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="tiles">
+      <div class="tile"><div class="k">Mode</div><div class="v" id="v-mode">-</div><div class="s" id="s-mode"></div><div class="bar hidden" id="b-learn"><div class="fill" id="f-learn" style="width:0"></div></div></div>
+      <div class="tile"><div class="k">Unknown nearby</div><div class="v" id="v-unk">-</div><div class="s" id="s-unk"></div></div>
+      <div class="tile"><div class="k">Rotating devices</div><div class="v c-blue" id="v-rand">-</div><div class="s" id="s-rand"></div><div class="bar"><div class="fill" id="f-rand" style="width:0"></div><div class="mark hidden" id="m-rand"></div></div></div>
+      <div class="tile"><div class="k">Alerts 24h</div><div class="v" id="v-alerts">-</div><div class="s" id="s-alerts"></div></div>
+    </div>
+
+    <div class="card">
+      <h2>Controls</h2>
+      <div class="row"><span class="lbl">Mode</span>
+        <button class="btn" id="m-home" aria-pressed="false">Home</button>
+        <button class="btn" id="m-away" aria-pressed="false">Away</button>
+        <button class="btn primary hidden" id="btn-arm">Arm now</button>
+      </div>
+      <div class="row"><span class="lbl">Guest</span>
+        <button class="btn" data-guest="2">2 h</button>
+        <button class="btn" data-guest="8">8 h</button>
+        <button class="btn" data-guest="24">24 h</button>
+        <button class="btn danger" data-guest="off">Off</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Live feed</h2>
+      <div class="feed" id="feed"></div>
+    </div>
+  </div>
+
+  <div class="card span2">
+    <h2>Last 24 hours</h2>
+    <canvas id="activity" aria-label="Activity over the last 24 hours"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--blue)"></i>rotating-address devices</span>
+      <span><i style="background:var(--amber)"></i>unknown static</span>
+      <span><i style="background:var(--green)"></i>known static</span>
+      <span><i style="background:var(--red)"></i>alert</span>
+    </div>
+    <div class="tip" id="tip2"></div>
+  </div>
+</section>
+
+<section id="view-dev" class="card hidden">
+  <h2>Devices</h2>
+  <div class="row">
+    <select id="dev-filter" aria-label="Filter">
+      <option value="unknown">Unknown static</option>
+      <option value="known">Known</option>
+      <option value="random">Rotating address</option>
+      <option value="all">All</option>
+    </select>
+    <input type="search" id="dev-q" placeholder="Search MAC, vendor, label" aria-label="Search">
+    <span class="dim" id="dev-count"></span>
+    <button class="btn primary hidden" id="dev-bulk">Mark all shown as known</button>
+  </div>
+  <div class="tablewrap" style="margin-top:10px">
+    <table>
+      <thead><tr><th>Device</th><th>Type</th><th>Last seen</th><th>Peak</th><th>Seen</th><th>Label</th><th></th></tr></thead>
+      <tbody id="dev-body"></tbody>
+    </table>
+  </div>
+</section>
+</main>
+
+<script>
+(() => {
+'use strict';
+// Every device string (names, vendors, labels) is attacker-controlled radio data.
+// It is only ever written with textContent, never innerHTML.
+
+const MONO = 'ui-monospace,"SF Mono",Menlo,Consolas,monospace';
+const TAU = Math.PI * 2;
+const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const $ = (s, r = document) => r.querySelector(s);
+const pad = n => String(n).padStart(2, '0');
+const hhmm = ts => { const d = new Date(ts * 1000); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+const rel = s => { s = Math.max(0, Math.round(s)); return s < 60 ? s + 's' : s < 3600 ? Math.floor(s / 60) + 'm' : s < 86400 ? Math.floor(s / 3600) + 'h' : Math.floor(s / 86400) + 'd'; };
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined && text !== null) e.textContent = text; return e; }
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(path + ' ' + r.status);
+  return r.json();
+}
+const post = (path, data) => api(path, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'wuds' },
+  body: JSON.stringify(data || {})
+});
+
+let state = null, radar = [], selected = null, tab = 'dash', lastAct = null;
+let actGeom = null, hits = [];
+
+/* ---------- tabs ---------- */
+function setTab(t) {
+  tab = t;
+  $('#view-dash').classList.toggle('hidden', t !== 'dash');
+  $('#view-dev').classList.toggle('hidden', t !== 'dev');
+  $('#tab-dash').setAttribute('aria-selected', t === 'dash');
+  $('#tab-dev').setAttribute('aria-selected', t === 'dev');
+  if (t === 'dash') { resizeRadar(); resizeTl(); if (lastAct) drawActivity(lastAct); }
+  if (t === 'dev') loadDevices();
+}
+$('#tab-dash').onclick = () => setTab('dash');
+$('#tab-dev').onclick = () => setTab('dev');
+
+/* ---------- radar ---------- */
+const canvas = $('#radar'), ctx = canvas.getContext('2d');
+let W = 0, H = 0;
+function resizeRadar() {
+  const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  W = r.width; H = r.height;
+  if (!W) return;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+new ResizeObserver(resizeRadar).observe(canvas);
+
+const norm = rssi => Math.min(1, Math.max(0, (-30 - rssi) / 65));
+function hashAngle(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return ((h >>> 0) / 4294967296) * TAU;
+}
+function classify(d) {
+  if (d.rand) return 'rand';
+  if (d.known) return 'known';
+  return d.rssi >= d.floor ? 'alert' : 'unk';
+}
+const PRIORITY = { alert: 3, unk: 2, known: 1, rand: 0 };
+
+function drawRadar(t) {
+  const cx = W / 2, cy = H / 2, R = Math.min(W, H) / 2 - 30;
+  ctx.clearRect(0, 0, W, H);
+
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+  g.addColorStop(0, 'rgba(53,224,194,0.08)'); g.addColorStop(1, 'rgba(53,224,194,0.01)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.fill();
+
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(53,224,194,0.07)';
+  for (let i = 0; i < 4; i++) {
+    const a = i * Math.PI / 4;
+    ctx.beginPath(); ctx.moveTo(cx - Math.cos(a) * R, cy - Math.sin(a) * R); ctx.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R); ctx.stroke();
+  }
+  ctx.font = '10px ' + MONO; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const lvl of [-45, -60, -75, -90]) {
+    const rr = R * norm(lvl);
+    ctx.strokeStyle = 'rgba(53,224,194,0.17)';
+    ctx.beginPath(); ctx.arc(cx, cy, rr, 0, TAU); ctx.stroke();
+    const lx = cx + rr * Math.cos(-Math.PI / 4), ly = cy + rr * Math.sin(-Math.PI / 4), label = lvl + ' dBm';
+    const w = ctx.measureText(label).width + 6;
+    ctx.fillStyle = 'rgba(10,17,24,0.9)'; ctx.fillRect(lx - w / 2, ly - 7, w, 14);
+    ctx.fillStyle = 'rgba(125,146,168,0.9)'; ctx.fillText(label, lx, ly);
+  }
+
+  const fl = state ? { wifi: state.wifi_floor, bt: state.bt_floor } : { wifi: -80, bt: -85 };
+  const floorRing = (val, color, label, ang) => {
+    const rr = R * norm(val);
+    ctx.save(); ctx.setLineDash([6, 5]); ctx.strokeStyle = color; ctx.lineWidth = 1.3;
+    ctx.beginPath(); ctx.arc(cx, cy, rr, 0, TAU); ctx.stroke(); ctx.restore();
+    const lx = cx + rr * Math.cos(ang), ly = cy + rr * Math.sin(ang), w = ctx.measureText(label).width + 8;
+    ctx.fillStyle = 'rgba(10,17,24,0.92)'; ctx.fillRect(lx - w / 2, ly - 7, w, 14);
+    ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.fillText(label, lx, ly);
+  };
+  floorRing(fl.wifi, 'rgba(255,176,32,0.95)', 'Wi-Fi ' + fl.wifi, Math.PI * 0.35);
+  floorRing(fl.bt, 'rgba(111,183,255,0.95)', 'BT ' + fl.bt, Math.PI * 0.65);
+
+  const sweep = reduce ? -Math.PI / 2 : ((t / 7000) % 1) * TAU - Math.PI / 2;
+  if (!reduce) {
+    for (let i = 0; i < 36; i++) {
+      const a1 = sweep - i * 0.025, a0 = a1 - 0.025;
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, R, a0, a1 + 0.002); ctx.closePath();
+      ctx.fillStyle = 'rgba(53,224,194,' + (0.2 * (1 - i / 36)).toFixed(3) + ')'; ctx.fill();
+    }
+    ctx.strokeStyle = 'rgba(53,224,194,0.75)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(sweep) * R, cy + Math.sin(sweep) * R); ctx.stroke();
+  }
+
+  const pts = radar.filter(visible).map(d => ({ d, cls: classify(d), a: hashAngle(d.mac), n: norm(d.rssi) }))
+    .sort((p, q) => PRIORITY[p.cls] - PRIORITY[q.cls]);
+  hits = [];
+  for (const p of pts) {
+    const x = cx + Math.cos(p.a) * R * p.n, y = cy + Math.sin(p.a) * R * p.n;
+    const diff = (((sweep - p.a) % TAU) + TAU) % TAU;
+    const flash = reduce ? 0 : (diff < 1.0 ? 1 - diff : 0);
+    const fade = 1 - Math.min(1, p.d.age / 300) * 0.65;
+    const alpha = Math.min(1, 0.4 + 0.6 * fade + flash * 0.4);
+    let color, r, glow = 0;
+    if (p.cls === 'rand') { color = '110,150,190'; r = 2.4; }
+    else if (p.cls === 'known') { color = '61,220,132'; r = 4; glow = 8; }
+    else if (p.cls === 'unk') { color = '255,176,32'; r = 5.5; glow = 12; }
+    else { color = '255,77,94'; r = 6; glow = 16; }
+    ctx.shadowBlur = glow; ctx.shadowColor = 'rgba(' + color + ',0.9)';
+    ctx.fillStyle = 'rgba(' + color + ',' + (p.cls === 'rand' ? alpha * 0.7 : alpha).toFixed(2) + ')';
+    ctx.beginPath(); ctx.arc(x, y, r + flash * 1.5, 0, TAU); ctx.fill();
+    ctx.shadowBlur = 0;
+    if (p.cls === 'alert' && !reduce) {
+      const ph = (t / 900) % 1;
+      ctx.strokeStyle = 'rgba(255,77,94,' + (0.8 * (1 - ph)).toFixed(2) + ')'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(x, y, r + ph * 16, 0, TAU); ctx.stroke();
+    }
+    if (selected && selected.mac === p.d.mac) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(x, y, r + 6, 0, TAU); ctx.stroke();
+    }
+    hits.push({ x, y, d: p.d, cls: p.cls });
+  }
+
+  ctx.shadowBlur = 14; ctx.shadowColor = 'rgba(53,224,194,0.9)'; ctx.fillStyle = '#35e0c2';
+  ctx.beginPath(); ctx.moveTo(cx, cy - 6); ctx.lineTo(cx + 6, cy); ctx.lineTo(cx, cy + 6); ctx.lineTo(cx - 6, cy); ctx.closePath(); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(125,146,168,0.8)'; ctx.textAlign = 'center'; ctx.fillText('SENSOR', cx, cy + 18);
+  if (!pts.length) { ctx.fillStyle = 'rgba(125,146,168,0.9)'; ctx.font = '12px ' + MONO; ctx.fillText('No unknown devices in range', cx, cy - R * 0.35); }
+}
+function frame(t) {
+  requestAnimationFrame(frame);
+  if (document.hidden || tab !== 'dash') return;
+  if (view === 'radar') { if (W) drawRadar(t); } else if (TW) drawTimeline(t);
+}
+requestAnimationFrame(frame);
+
+function nearestHit(e) {
+  const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  let best = null, bd = 18;
+  for (const h of hits) {
+    const dist = Math.hypot(h.x - x, h.y - y) - PRIORITY[h.cls] * 2;
+    if (dist < bd) { bd = dist; best = h; }
+  }
+  return { best, x, y };
+}
+const tip = $('#tip');
+canvas.addEventListener('pointermove', e => {
+  const { best, x, y } = nearestHit(e);
+  if (!best) { tip.style.display = 'none'; return; }
+  const d = best.d;
+  tip.textContent = [d.label || d.name || d.manuf || (d.rand ? 'Rotating address' : 'Unknown vendor'),
+    d.mac, d.phy + '  ' + d.rssi + ' dBm', 'seen ' + rel(d.age) + ' ago'].join('\n');
+  tip.style.display = 'block';
+  tip.style.left = Math.min(x + 12, canvas.clientWidth - 200) + 'px';
+  tip.style.top = Math.max(y - 70, 0) + 'px';
+});
+canvas.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
+canvas.addEventListener('pointerdown', e => {
+  const { best } = nearestHit(e);
+  if (best) selectDevice(best.d);
+});
+
+/* ---------- signal timeline ---------- */
+const tl = $('#timeline'), tctx = tl.getContext('2d');
+let TW = 0, TH = 0, signals = null, signalsAt = 0, tlHits = [], view = 'timeline';
+const WINDOW = 600;
+function nowTs() { return signals ? signals.now + (performance.now() - signalsAt) / 1000 : Date.now() / 1000; }
+function resizeTl() {
+  const r = tl.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  TW = r.width; TH = r.height;
+  if (!TW) return;
+  tl.width = Math.round(TW * dpr); tl.height = Math.round(TH * dpr);
+  tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+new ResizeObserver(resizeTl).observe(tl);
+
+const TL_STYLE = {
+  rand: ['rgba(110,150,190,0.32)', 1, 0],
+  known: ['rgba(61,220,132,0.85)', 1.6, 0],
+  unk: ['rgba(255,176,32,0.95)', 2, 8],
+  alert: ['rgba(255,77,94,1)', 2.4, 12],
+};
+function drawTimeline(t) {
+  const c = tctx, L = 40, Rm = 78, T = 12, B = 26, pw = TW - L - Rm, ph = TH - T - B;
+  const tNow = nowTs(), t0 = tNow - WINDOW;
+  const X = ts => L + ((ts - t0) / WINDOW) * pw, Y = rssi => T + norm(rssi) * ph;
+  c.clearRect(0, 0, TW, TH);
+  const fl = state ? { wifi: state.wifi_floor, bt: state.bt_floor } : { wifi: -80, bt: -85 };
+
+  // alert zone: everything above the more permissive floor
+  const zoneY = Y(Math.min(fl.wifi, fl.bt));
+  const zg = c.createLinearGradient(0, T, 0, zoneY);
+  zg.addColorStop(0, 'rgba(255,77,94,0.10)'); zg.addColorStop(1, 'rgba(255,176,32,0.03)');
+  c.fillStyle = zg; c.fillRect(L, T, pw, zoneY - T);
+
+  c.font = '10px ' + MONO; c.lineWidth = 1;
+  c.textAlign = 'right'; c.textBaseline = 'middle';
+  for (const lvl of [-45, -60, -75, -90]) {
+    const y = Y(lvl);
+    c.strokeStyle = 'rgba(53,224,194,0.10)'; c.beginPath(); c.moveTo(L, y); c.lineTo(L + pw, y); c.stroke();
+    c.fillStyle = 'rgba(125,146,168,0.9)'; c.fillText(String(lvl), L - 6, y);
+  }
+  c.fillStyle = 'rgba(125,146,168,0.7)'; c.fillText('dBm', L - 6, 5);
+  c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+  for (let ts = Math.ceil(t0 / 120) * 120; ts <= tNow; ts += 120) {
+    const x = X(ts);
+    c.strokeStyle = 'rgba(125,146,168,0.12)'; c.beginPath(); c.moveTo(x, T); c.lineTo(x, T + ph); c.stroke();
+    if (L + pw - x > 30) { c.fillStyle = 'rgba(125,146,168,0.9)'; c.fillText(hhmm(ts), x, TH - 8); }
+  }
+
+  const floorLine = (val, color, label, dy) => {
+    const y = Y(val);
+    c.save(); c.setLineDash([6, 5]); c.strokeStyle = color; c.lineWidth = 1.3;
+    c.beginPath(); c.moveTo(L, y); c.lineTo(L + pw, y); c.stroke(); c.restore();
+    c.fillStyle = color; c.textAlign = 'left'; c.textBaseline = 'middle'; c.fillText(label, L + pw + 8, y + dy);
+  };
+  floorLine(fl.wifi, 'rgba(255,176,32,0.95)', 'Wi-Fi ' + fl.wifi, 0);
+  floorLine(fl.bt, 'rgba(111,183,255,0.95)', 'BT ' + fl.bt, Math.abs(Y(fl.wifi) - Y(fl.bt)) < 13 ? 13 : 0);
+
+  const all = signals ? signals.series : [];
+  const series = all.filter(visible);
+  const items = series.map(s => {
+    const last = s.pts[s.pts.length - 1];
+    const cls = s.rand ? 'rand' : s.known ? 'known' : (last[1] >= s.floor ? 'alert' : 'unk');
+    return { s, last, cls };
+  }).sort((a, b) => PRIORITY[a.cls] - PRIORITY[b.cls]);
+  const path = s => {
+    c.beginPath(); let prev = null;
+    for (const p of s.pts) {
+      const x = X(p[0]), y = Y(p[1]);
+      if (!prev || p[0] - prev[0] > 20) c.moveTo(x, y); else c.lineTo(x, y);
+      prev = p;
+    }
+  };
+  tlHits = [];
+  c.save(); c.beginPath(); c.rect(L, T, pw + 2, ph); c.clip();
+  c.lineJoin = 'round'; c.lineCap = 'round';
+  for (const it of items) {
+    const [col, w, glow] = TL_STYLE[it.cls];
+    if (selected && selected.mac === it.s.mac) { path(it.s); c.strokeStyle = 'rgba(255,255,255,0.55)'; c.lineWidth = w + 4; c.shadowBlur = 0; c.stroke(); }
+    path(it.s); c.strokeStyle = col; c.lineWidth = w; c.shadowBlur = glow; c.shadowColor = col; c.stroke(); c.shadowBlur = 0;
+    if (it.s.pts.length === 1) { c.fillStyle = col; c.beginPath(); c.arc(X(it.last[0]), Y(it.last[1]), 2, 0, TAU); c.fill(); }
+    for (const p of it.s.pts) tlHits.push({ x: X(p[0]), y: Y(p[1]), s: it.s, p });
+  }
+  c.restore();
+
+  c.strokeStyle = 'rgba(53,224,194,0.55)'; c.lineWidth = 1;
+  c.beginPath(); c.moveTo(L + pw, T); c.lineTo(L + pw, T + ph); c.stroke();
+  c.font = '10px ' + MONO;
+  for (const it of items) {
+    if (it.cls === 'rand' || tNow - it.last[0] > 30) continue;
+    const x = Math.min(X(it.last[0]), L + pw), y = Y(it.last[1]), col = TL_STYLE[it.cls][0];
+    c.fillStyle = col; c.shadowBlur = TL_STYLE[it.cls][2]; c.shadowColor = col;
+    c.beginPath(); c.arc(x, y, 3.5, 0, TAU); c.fill(); c.shadowBlur = 0;
+    if (it.cls === 'alert' && !reduce) {
+      const pp = (t / 900) % 1;
+      c.strokeStyle = 'rgba(255,77,94,' + (0.8 * (1 - pp)).toFixed(2) + ')'; c.lineWidth = 1.5;
+      c.beginPath(); c.arc(x, y, 4 + pp * 14, 0, TAU); c.stroke();
+    }
+    const name = it.s.label || it.s.name || it.s.manuf || it.s.mac.slice(9);
+    c.fillStyle = col; c.textAlign = 'left'; c.textBaseline = 'middle';
+    c.fillText(name, x + 9, y - (it.cls === 'alert' ? 0 : 0), Rm - 14);
+  }
+  c.fillStyle = 'rgba(53,224,194,0.9)'; c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+  c.fillText('now', L + pw, TH - 8);
+  if (!items.length) { c.fillStyle = 'rgba(125,146,168,0.9)'; c.font = '12px ' + MONO; c.fillText('No unknown devices in range' + (all.length ? ' (' + all.length + ' hidden)' : ''), L + pw / 2, T + ph / 2); }
+}
+
+function nearestTl(e) {
+  const r = tl.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  let best = null, bd = 16;
+  for (const h of tlHits) {
+    const d = Math.hypot(h.x - x, h.y - y) - (h.s.rand ? 0 : 3);
+    if (d < bd) { bd = d; best = h; }
+  }
+  return { best, x, y };
+}
+function seriesToDevice(s) {
+  const known = radar.find(d => d.mac === s.mac);
+  if (known) return known;
+  const last = s.pts[s.pts.length - 1];
+  return { mac: s.mac, phy: s.phy, rand: s.rand, known: s.known, label: s.label, manuf: s.manuf, name: s.name,
+    rssi: last[1], age: Math.round(nowTs() - last[0]), floor: s.floor, first_seen: null, seen_count: null };
+}
+const tip3 = $('#tip3');
+tl.addEventListener('pointermove', e => {
+  const { best, x, y } = nearestTl(e);
+  if (!best) { tip3.style.display = 'none'; return; }
+  const s = best.s;
+  tip3.textContent = [s.label || s.name || s.manuf || (s.rand ? 'Rotating address' : 'Unknown vendor'),
+    s.mac, s.phy + '  ' + best.p[1] + ' dBm', rel(nowTs() - best.p[0]) + ' ago'].join('\n');
+  tip3.style.display = 'block';
+  tip3.style.left = Math.min(x + 12, tl.clientWidth - 200) + 'px';
+  tip3.style.top = Math.max(y - 70, 0) + 'px';
+});
+tl.addEventListener('pointerleave', () => { tip3.style.display = 'none'; });
+tl.addEventListener('pointerdown', e => {
+  const { best } = nearestTl(e);
+  if (best) selectDevice(seriesToDevice(best.s));
+});
+
+// Known and rotating devices are hidden by default so only unknown static devices show.
+let show = { known: false, rand: false };
+try { Object.assign(show, JSON.parse(localStorage.getItem('wuds.show') || '{}')); } catch (e) { /* storage unavailable */ }
+const visible = d => !(d.rand && !show.rand) && !(d.known && !show.known);
+function syncFilters() {
+  $('#chip-known').setAttribute('aria-pressed', show.known);
+  $('#chip-rand').setAttribute('aria-pressed', show.rand);
+  try { localStorage.setItem('wuds.show', JSON.stringify(show)); } catch (e) { /* ignore */ }
+}
+$('#chip-known').onclick = () => { show.known = !show.known; syncFilters(); };
+$('#chip-rand').onclick = () => { show.rand = !show.rand; syncFilters(); };
+
+function setView(v) {
+  view = v;
+  $('#wrap-tl').classList.toggle('hidden', v !== 'timeline');
+  $('#wrap-radar').classList.toggle('hidden', v !== 'radar');
+  $('#v-tl').setAttribute('aria-pressed', v === 'timeline');
+  $('#v-rd').setAttribute('aria-pressed', v === 'radar');
+  $('#view-title').textContent = v === 'timeline' ? 'Signal timeline' : 'Proximity radar';
+  $('#view-note').textContent = v === 'timeline'
+    ? 'Higher means stronger signal. A rising trace is approaching; a trace that peaks below the dashed line is passing by.'
+    : 'Distance from center is signal strength only. Direction is arbitrary: one sensor cannot tell bearing. Dashed rings mark the alert floors.';
+  resizeTl(); resizeRadar();
+}
+$('#v-tl').onclick = () => setView('timeline');
+$('#v-rd').onclick = () => setView('radar');
+
+/* ---------- selected device ---------- */
+let selLive = {};
+function kv(box, k, v, id) {
+  box.appendChild(el('span', null, k));
+  const s = el('span', null, v); if (id) selLive[id] = s; box.appendChild(s);
+}
+function selectDevice(d) {
+  selected = d; selLive = {};
+  const box = $('#sel'); box.replaceChildren();
+  const head = el('div', 'row');
+  head.appendChild(el('strong', null, d.label || d.name || d.manuf || (d.rand ? 'Rotating address' : 'Unknown vendor')));
+  head.appendChild(el('span', 'pill', d.rand ? 'rotating' : d.known ? 'known' : 'unknown'));
+  box.appendChild(head);
+  const grid = el('div', 'kv'); grid.style.marginTop = '8px';
+  kv(grid, 'MAC', d.mac); kv(grid, 'Type', d.phy); kv(grid, 'Vendor', d.manuf || '-');
+  kv(grid, 'Signal', '', 'rssi'); kv(grid, 'Last seen', '', 'age');
+  kv(grid, 'First seen', d.first_seen ? hhmm(d.first_seen) : '-'); kv(grid, 'Sightings', String(d.seen_count ?? '-'));
+  box.appendChild(grid);
+  const spark = el('canvas'); spark.id = 'spark'; box.appendChild(spark);
+  if (d.rand) {
+    box.appendChild(el('div', 'dim', 'Rotating address: it changes every few minutes, so it cannot be tagged.'));
+  } else {
+    const row = el('div', 'row');
+    const inp = el('input'); inp.type = 'text'; inp.maxLength = 40; inp.placeholder = 'Label, e.g. Mail carrier'; inp.value = d.label || '';
+    const b = el('button', 'btn primary', d.known ? 'Update label' : 'Mark known');
+    b.onclick = async () => { await post('/api/known', { mac: d.mac, label: inp.value }); await tickFast(); const n = radar.find(x => x.mac === d.mac); if (n) selectDevice(n); };
+    row.appendChild(inp); row.appendChild(b);
+    if (d.known) {
+      const u = el('button', 'btn danger', 'Unmark');
+      u.onclick = async () => { await post('/api/known/delete', { mac: d.mac }); await tickFast(); const n = radar.find(x => x.mac === d.mac); if (n) selectDevice(n); };
+      row.appendChild(u);
+    }
+    box.appendChild(row);
+  }
+  updateSelLive(); loadSpark();
+}
+function updateSelLive() {
+  if (!selected) return;
+  const d = radar.find(x => x.mac === selected.mac);
+  if (selLive.rssi) selLive.rssi.textContent = d ? d.rssi + ' dBm' : 'out of range';
+  if (selLive.age) selLive.age.textContent = d ? rel(d.age) + ' ago' : 'not in last 5 min';
+}
+async function loadSpark() {
+  if (!selected) return;
+  try {
+    const h = await api('/api/history/' + encodeURIComponent(selected.mac) + '?minutes=60');
+    const c = $('#spark'); if (!c) return;
+    const dpr = window.devicePixelRatio || 1, r = c.getBoundingClientRect();
+    c.width = Math.round(r.width * dpr); c.height = Math.round(r.height * dpr);
+    const x = c.getContext('2d'); x.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = r.width, hgt = r.height, pts = h.points;
+    x.strokeStyle = 'rgba(125,146,168,0.3)'; x.lineWidth = 1; x.strokeRect(0.5, 0.5, w - 1, hgt - 1);
+    if (pts.length < 2) { x.fillStyle = 'rgba(125,146,168,0.9)'; x.font = '11px ' + MONO; x.fillText('no history in last hour', 8, hgt / 2 + 4); return; }
+    const t1 = pts[pts.length - 1][0], span = Math.min(3600, Math.max(60, t1 - pts[0][0])), t0 = t1 - span;
+    x.fillStyle = 'rgba(125,146,168,0.9)'; x.font = '10px ' + MONO; x.fillText('last ' + rel(span) + ' (-100 to -30 dBm)', 6, 12);
+    x.strokeStyle = '#35e0c2'; x.lineWidth = 1.5; x.beginPath();
+    pts.forEach((p, i) => {
+      const px = ((p[0] - t0) / span) * (w - 8) + 4, py = hgt - 4 - ((p[1] + 100) / 70) * (hgt - 8);
+      i ? x.lineTo(px, Math.min(hgt - 2, Math.max(2, py))) : x.moveTo(px, Math.min(hgt - 2, Math.max(2, py)));
+    });
+    x.stroke();
+  } catch (e) { /* history is optional */ }
+}
+
+/* ---------- state tiles & controls ---------- */
+function renderState() {
+  const s = state; if (!s) return;
+  const modeEl = $('#v-mode');
+  modeEl.textContent = s.mode.toUpperCase();
+  modeEl.className = 'v ' + (s.mode === 'learning' ? 'c-blue' : s.mode === 'away' ? 'c-amber' : 'c-green');
+  const learning = s.mode === 'learning';
+  $('#b-learn').classList.toggle('hidden', !learning);
+  $('#btn-arm').classList.toggle('hidden', !learning);
+  if (learning) {
+    const days = s.learning_minutes / 1440;
+    $('#s-mode').textContent = 'Learning: ' + days.toFixed(1) + ' of 14 days, alerts off';
+    $('#f-learn').style.width = Math.min(100, s.learning_minutes / s.learning_target_minutes * 100) + '%';
+  } else {
+    $('#s-mode').textContent = s.mode === 'away' ? 'Alerting on any strong rotating device' : 'Alerting above household peak';
+  }
+  $('#m-home').setAttribute('aria-pressed', s.mode === 'home');
+  $('#m-away').setAttribute('aria-pressed', s.mode === 'away');
+
+  const u = $('#v-unk'); u.textContent = s.unknown_static_now;
+  u.className = 'v ' + (s.unknown_static_now ? 'c-amber' : 'c-green');
+  $('#s-unk').textContent = s.known_static_now + ' known static nearby';
+
+  $('#v-rand').textContent = s.random_now;
+  const lim = s.random_limit;
+  $('#s-rand').textContent = lim === null ? 'peak so far is being learned' : 'limit ' + lim + ' (household peak ' + s.baseline_max + ')';
+  const scale = Math.max((lim || 0) * 1.6, s.random_now * 1.2, 4);
+  const f = $('#f-rand'); f.style.width = (s.random_now / scale * 100) + '%';
+  f.style.background = (lim !== null && s.random_now > lim) ? 'var(--red)' : 'var(--accent)';
+  const m = $('#m-rand'); m.classList.toggle('hidden', lim === null); if (lim !== null) m.style.left = (lim / scale * 100) + '%';
+
+  const a = $('#v-alerts'); a.textContent = s.alerts_24h; a.className = 'v ' + (s.alerts_24h ? 'c-red' : 'c-green');
+  $('#s-alerts').textContent = s.last_alert ? 'last: ' + s.last_alert.title + ' (' + rel(s.now - s.last_alert.ts) + ' ago)' : 'none';
+
+  $('#d-sensor').className = 'dot ' + (s.sensor_ok ? 'ok' : 'bad');
+  $('#t-sensor').textContent = s.sensor_ok ? 'sensor live' : 'no sightings in 2 min';
+  const g = $('#p-guest');
+  if (s.quiet_until) { g.hidden = false; g.textContent = 'guest until ' + hhmm(s.quiet_until); } else { g.hidden = true; }
+  document.querySelectorAll('[data-guest]').forEach(b => b.setAttribute('aria-pressed', 'false'));
+}
+function setOnline(ok) {
+  if (!ok) { $('#d-sensor').className = 'dot warn'; $('#t-sensor').textContent = 'web API unreachable'; }
+}
+$('#m-home').onclick = async () => { await post('/api/mode', { mode: 'home' }); tickFast(); };
+$('#m-away').onclick = async () => { await post('/api/mode', { mode: 'away' }); tickFast(); };
+$('#btn-arm').onclick = async () => {
+  const days = state ? (state.learning_minutes / 1440).toFixed(1) : '?';
+  if (!confirm('Only ' + days + ' of 14 recommended days learned. Arm now? Static devices seen so far become known.')) return;
+  await post('/api/arm'); tickFast();
+};
+document.querySelectorAll('[data-guest]').forEach(b => {
+  b.onclick = async () => { const v = b.dataset.guest; await post('/api/guest', { hours: v === 'off' ? 'off' : Number(v) }); tickFast(); };
+});
+
+/* ---------- feed ---------- */
+function renderFeed(items) {
+  const box = $('#feed'); box.replaceChildren();
+  if (!items.length) { box.appendChild(el('div', 'dim', 'Nothing yet.')); return; }
+  for (const i of items) {
+    const cls = i.kind === 'alert' ? 'alert' : (i.known ? 'newknown' : 'new');
+    const d = el('div', 'item ' + cls);
+    d.appendChild(el('div', 't', hhmm(i.ts) + '  ' + rel(Date.now() / 1000 - i.ts) + ' ago'));
+    d.appendChild(el('div', 'h', i.title));
+    d.appendChild(el('div', 'x', i.text));
+    box.appendChild(d);
+  }
+}
+
+/* ---------- 24h activity ---------- */
+const act = $('#activity'), actCtx = act.getContext('2d');
+function drawActivity(data) {
+  lastAct = data;
+  const r = act.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  if (!r.width) return;
+  act.width = Math.round(r.width * dpr); act.height = Math.round(r.height * dpr);
+  const c = actCtx; c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const w = r.width, h = r.height, L = 8, Rr = 8, plotW = w - L - Rr;
+  const n = Math.round((data.end - data.start) / data.bucket) + 1;
+  const bw = plotW / n;
+  const byIdx = new Map(data.rows.map(row => [Math.round((row.b - data.start) / data.bucket), row]));
+  const topH = 88, y1 = topH + 8, y2 = y1 + 16, y3 = y2 + 16;
+  actGeom = { L, bw, n, data, byIdx };
+
+  c.clearRect(0, 0, w, h);
+  c.strokeStyle = 'rgba(125,146,168,0.15)'; c.lineWidth = 1;
+  c.font = '10px ' + MONO; c.textAlign = 'center'; c.fillStyle = 'rgba(125,146,168,0.9)';
+  for (let t = data.start; t <= data.end; t += data.bucket) {
+    const d = new Date(t * 1000);
+    if (d.getMinutes() !== 0 || d.getHours() % 4 !== 0) continue;
+    const x = L + ((t - data.start) / data.bucket) * bw;
+    c.beginPath(); c.moveTo(x, 0); c.lineTo(x, y3 + 16); c.stroke();
+    c.fillText(pad(d.getHours()) + ':00', x, y3 + 28);
+  }
+
+  let maxR = 1; byIdx.forEach(row => { maxR = Math.max(maxR, row.r); });
+  const gr = c.createLinearGradient(0, 0, 0, topH);
+  gr.addColorStop(0, 'rgba(110,150,190,0.55)'); gr.addColorStop(1, 'rgba(110,150,190,0.02)');
+  c.beginPath(); c.moveTo(L, topH);
+  for (let i = 0; i < n; i++) { const row = byIdx.get(i), v = row ? row.r : 0; c.lineTo(L + (i + 0.5) * bw, topH - (v / maxR) * (topH - 8)); }
+  c.lineTo(L + plotW, topH); c.closePath(); c.fillStyle = gr; c.fill();
+  c.strokeStyle = 'rgba(110,150,190,0.9)'; c.lineWidth = 1.2; c.beginPath();
+  for (let i = 0; i < n; i++) { const row = byIdx.get(i), v = row ? row.r : 0, y = topH - (v / maxR) * (topH - 8); i ? c.lineTo(L + (i + 0.5) * bw, y) : c.moveTo(L + 0.5 * bw, y); }
+  c.stroke();
+  c.fillStyle = 'rgba(125,146,168,0.9)'; c.textAlign = 'left'; c.fillText('rotating peak ' + maxR, L + 4, 12);
+
+  for (let i = 0; i < n; i++) {
+    const row = byIdx.get(i); if (!row) continue;
+    if (row.u > 0) { c.fillStyle = 'rgba(255,176,32,' + Math.min(1, 0.35 + row.u * 0.25).toFixed(2) + ')'; c.fillRect(L + i * bw, y1, Math.max(1, bw - 0.5), 12); }
+    if (row.k > 0) { c.fillStyle = 'rgba(61,220,132,' + Math.min(1, 0.25 + row.k * 0.2).toFixed(2) + ')'; c.fillRect(L + i * bw, y2, Math.max(1, bw - 0.5), 12); }
+  }
+  c.fillStyle = 'rgba(255,77,94,0.95)';
+  for (const t of data.alerts) {
+    const x = L + ((t - data.start) / data.bucket) * bw;
+    c.fillRect(x - 1, y3, 2, 14);
+    c.beginPath(); c.moveTo(x - 4, y3); c.lineTo(x + 4, y3); c.lineTo(x, y3 + 6); c.closePath(); c.fill();
+  }
+}
+const tip2 = $('#tip2');
+tip2.style.position = 'absolute';
+act.parentElement.style.position = 'relative';
+act.addEventListener('pointermove', e => {
+  if (!actGeom) return;
+  const r = act.getBoundingClientRect();
+  const idx = Math.floor((e.clientX - r.left - actGeom.L) / actGeom.bw);
+  if (idx < 0 || idx >= actGeom.n) { tip2.style.display = 'none'; return; }
+  const row = actGeom.byIdx.get(idx) || { r: 0, u: 0, k: 0, mx: null };
+  const t0 = actGeom.data.start + idx * actGeom.data.bucket;
+  const alerts = actGeom.data.alerts.filter(a => a >= t0 && a < t0 + actGeom.data.bucket).length;
+  tip2.textContent = [hhmm(t0) + ' - ' + hhmm(t0 + actGeom.data.bucket), 'rotating: ' + row.r, 'unknown static: ' + row.u, 'known static: ' + row.k, 'alerts: ' + alerts].join('\n');
+  tip2.style.display = 'block';
+  tip2.style.left = Math.min(e.clientX - r.left + 12, r.width - 180) + 'px';
+  tip2.style.top = '40px';
+});
+act.addEventListener('pointerleave', () => { tip2.style.display = 'none'; });
+new ResizeObserver(() => { if (lastAct && tab === 'dash') drawActivity(lastAct); }).observe(act);
+
+/* ---------- devices tab ---------- */
+let devTimer = null;
+async function loadDevices() {
+  const f = $('#dev-filter').value, q = $('#dev-q').value;
+  let d;
+  try { d = await api('/api/devices?filter=' + encodeURIComponent(f) + '&q=' + encodeURIComponent(q)); } catch (e) { return; }
+  const body = $('#dev-body'); body.replaceChildren();
+  $('#dev-count').textContent = d.devices.length + (d.devices.length === 300 ? '+' : '') + ' devices';
+  const now = Date.now() / 1000;
+  for (const x of d.devices) {
+    const tr = el('tr');
+    const c1 = el('td'); c1.appendChild(el('div', null, x.label || x.name || x.manuf || '-')); c1.appendChild(el('div', 'mono dim', x.mac));
+    tr.appendChild(c1);
+    tr.appendChild(el('td', null, x.phy || '-'));
+    tr.appendChild(el('td', null, rel(now - x.last_seen) + ' ago'));
+    tr.appendChild(el('td', 'mono', x.max_rssi ? x.max_rssi + ' dBm' : '-'));
+    tr.appendChild(el('td', 'mono', String(x.seen_count)));
+    const c6 = el('td'); const inp = el('input'); inp.type = 'text'; inp.maxLength = 40; inp.value = x.label || ''; inp.placeholder = 'label';
+    inp.disabled = !!x.rand; c6.appendChild(inp); tr.appendChild(c6);
+    const c7 = el('td'); const b = el('button', 'btn ' + (x.known ? 'danger' : 'primary'), x.rand ? 'rotating' : x.known ? 'Unmark' : 'Mark known');
+    b.disabled = !!x.rand;
+    b.onclick = async () => {
+      if (x.known) await post('/api/known/delete', { mac: x.mac }); else await post('/api/known', { mac: x.mac, label: inp.value });
+      loadDevices();
+    };
+    c7.appendChild(b); tr.appendChild(c7);
+    body.appendChild(tr);
+  }
+  if (!d.devices.length) { const tr = el('tr'); const td = el('td', 'dim', 'No devices match.'); td.colSpan = 7; tr.appendChild(td); body.appendChild(tr); }
+  const bulk = $('#dev-bulk');
+  bulk.classList.toggle('hidden', f !== 'unknown' || !d.devices.length);
+  bulk.onclick = async () => {
+    if (!confirm('Mark ' + d.devices.length + ' devices as known? They stop alerting and leave the timeline.')) return;
+    await post('/api/known/bulk', { macs: d.devices.map(x => x.mac) });
+    loadDevices();
+  };
+}
+$('#dev-filter').onchange = loadDevices;
+$('#dev-q').oninput = () => { clearTimeout(devTimer); devTimer = setTimeout(loadDevices, 300); };
+
+/* ---------- polling ---------- */
+async function tickFast() {
+  try {
+    const [s, r, g] = await Promise.all([api('/api/state'), api('/api/radar?window=300'), api('/api/signals?minutes=10')]);
+    state = s; radar = r.devices; signals = g; signalsAt = performance.now();
+    const nk = g.series.filter(x => x.known).length, nr = g.series.filter(x => x.rand).length;
+    $('#n-known').textContent = nk; $('#n-rand').textContent = nr >= 80 ? '80+' : nr;
+    renderState(); updateSelLive();
+  } catch (e) { setOnline(false); }
+}
+async function tickSlow() {
+  try {
+    const [f, a] = await Promise.all([api('/api/feed?limit=40'), api('/api/activity?hours=24')]);
+    renderFeed(f.items); drawActivity(a); loadSpark();
+  } catch (e) { /* the fast tick reports connectivity */ }
+}
+setInterval(() => { if (!document.hidden) tickFast(); }, 5000);
+setInterval(() => { if (!document.hidden) tickSlow(); }, 30000);
+setInterval(() => { if (tab === 'dev' && !document.hidden && document.activeElement.tagName !== 'INPUT') loadDevices(); }, 15000);
+setInterval(() => { const d = new Date(); $('#clock').textContent = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }, 1000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { tickFast(); tickSlow(); } });
+syncFilters(); setView('timeline'); tickFast(); tickSlow();
+})();
+</script>
+</body>
+</html>

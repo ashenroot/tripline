@@ -1,0 +1,13 @@
+[Unit]
+Description=WUDS2 web UI
+After=wuds-watcher.service
+
+[Service]
+User=youruser
+Environment=WUDS_CONFIG=/etc/wuds/config.ini
+WorkingDirectory=/opt/wuds
+ExecStart=/usr/bin/python3 /opt/wuds/web.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
