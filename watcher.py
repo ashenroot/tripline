@@ -313,8 +313,12 @@ def ingest(db, d, now, home=frozenset(), home_ssids=frozenset()):
     """
     mac = (d.get("kismet.device.base.macaddr") or "").lower()
     rssi = d.get("rssi")
-    if not mac or not isinstance(rssi, int) or rssi == 0:
+    if not mac:
         return None
+    # Some devices (often Bluetooth) come with no signal reading. They are still recorded, so they appear in
+    # the Devices tab and can be linked, but they get no sighting, no alert and no signal history.
+    has_signal = isinstance(rssi, (int, float)) and rssi != 0
+    rssi = int(rssi) if has_signal else 0
     ap = (d.get("bssid") or "").lower()
     ap = ap if ap and ap != "00:00:00:00:00:00" and ap != mac else None
     phy = d.get("kismet.device.base.phyname") or ""
@@ -327,14 +331,15 @@ def ingest(db, d, now, home=frozenset(), home_ssids=frozenset()):
     if ssids:
         identity.record_probes(db, mac, ssids, now)
     rand = 0 if at_home else is_random(phy, mac, manuf)
-    if not 0 <= now - _last_sighting.get(mac, -10**12) < SIGHTING_INTERVAL:
+    if has_signal and not 0 <= now - _last_sighting.get(mac, -10**12) < SIGHTING_INTERVAL:
         _last_sighting[mac] = now
         db.execute("INSERT INTO sightings VALUES(?,?,?,?,?)", (now, mac, phy, rssi, rand))
     db.execute("INSERT OR IGNORE INTO presence(bucket,ref) VALUES(?,?)", (now // identity.BUCKET, "device:" + mac))
     db.execute(
         "INSERT INTO devices(mac,phy,manuf,name,rand,first_seen,last_seen,max_rssi,seen_count,known) "
         "VALUES(?,?,?,?,?,?,?,?,1,?) ON CONFLICT(mac) DO UPDATE SET "
-        "last_seen=excluded.last_seen, max_rssi=MAX(max_rssi, excluded.max_rssi), "
+        "last_seen=excluded.last_seen, max_rssi=CASE WHEN excluded.max_rssi=0 THEN max_rssi "
+        "WHEN max_rssi=0 THEN excluded.max_rssi ELSE MAX(max_rssi, excluded.max_rssi) END, "
         "seen_count=seen_count+1, name=COALESCE(NULLIF(excluded.name,''), name), "
         "rand=MIN(rand, excluded.rand), "
         "known=CASE WHEN src='unmarked' THEN known ELSE MAX(known, excluded.known) END",
@@ -342,6 +347,8 @@ def ingest(db, d, now, home=frozenset(), home_ssids=frozenset()):
     if ap:
         db.execute("UPDATE devices SET bssid=? WHERE mac=?", (ap, mac))
     store_extra(db, mac, d)
+    if not has_signal:
+        return None
     known = db.execute("SELECT known FROM devices WHERE mac=?", (mac,)).fetchone()[0]
     return mac, phy, manuf, rssi, rand, known
 
@@ -525,6 +532,11 @@ def cmd_doctor(cfg, db, args):
         note("nothing heard yet; wait a minute, or check the adapters above")
     (ok if with_rssi else bad)(f"signal strength (rssi) present on {with_rssi} devices"
                                + ("" if with_rssi else " -> alert thresholds cannot work"))
+    for phy_name, total in sorted(by_phy.items()):
+        n = sum(1 for d in devs if (d.get("kismet.device.base.phyname") or "?") == phy_name
+                and isinstance(d.get("rssi"), (int, float)) and d.get("rssi") != 0)
+        (ok if n == total else note)(f"  {phy_name}: signal strength on {n} of {total}"
+                                     + ("" if n == total else " (devices without a reading are listed but cannot alert)"))
     (ok if with_bssid else note)(f"associated BSSID present on {with_bssid} devices"
                                  + ("" if with_bssid else " (home_bssids has no effect until this appears; fine if no clients yet)"))
     (ok if with_probes else note)(f"probed SSIDs present on {with_probes} devices ({len(all_ssids)} distinct names)"

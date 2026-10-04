@@ -77,6 +77,15 @@ class Ingest(unittest.TestCase):
         watcher.ingest(self.db, rec("00:10:20:30:40:50", "aa:bb:cc:07:00:02"), 1000, self.HOME)
         self.assertEqual(self.state("00:10:20:30:40:50"), (0, 0))
 
+    def test_device_without_signal_is_listed_but_not_alertable(self):
+        d = {"kismet.device.base.macaddr": "CA:11:22:33:44:55", "kismet.device.base.phyname": "Bluetooth",
+             "kismet.device.base.manuf": "", "rssi": 0}
+        self.assertIsNone(watcher.ingest(self.db, d, 1000))
+        self.assertEqual(self.state("ca:11:22:33:44:55"), (0, 0))
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM sightings").fetchone()[0], 0)
+        watcher.ingest(self.db, rec("ca:11:22:33:44:55", rssi=-70), 1100)
+        self.assertEqual(self.db.execute("SELECT max_rssi FROM devices WHERE mac='ca:11:22:33:44:55'").fetchone()[0], -70)
+
     def test_foreign_ap_stays_unknown(self):
         watcher.ingest(self.db, rec("00:10:20:30:40:50", "11:22:33:44:55:66"), 1000, self.HOME)
         self.assertEqual(self.state("00:10:20:30:40:50"), (0, 0))
