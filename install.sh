@@ -335,6 +335,11 @@ if have_systemd; then
   [ "$SDR" = 1 ] && UNITS="$UNITS tripline-tpms"
   # shellcheck disable=SC2086
   systemctl enable --now $UNITS
+  # enable --now leaves running services on their old code, so restart ours after an update
+  # (Kismet keeps running, so capture is not interrupted).
+  for u in $UNITS; do
+    case "$u" in tripline-*) systemctl restart "$u" ;; esac
+  done
   sleep 2
   for u in $UNITS; do
     systemctl is-active --quiet "$u" && say "$u: running" || warn "$u is not running: journalctl -u $u -n 30"
