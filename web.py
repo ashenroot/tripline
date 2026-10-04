@@ -12,7 +12,7 @@ import sqlite3
 import sys
 import time
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, g, jsonify, request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -32,9 +32,32 @@ def cfg():
 
 
 def get_db():
-    db = watcher.db_connect(cfg())
-    db.row_factory = sqlite3.Row
-    return db
+    """One connection per request, closed afterwards."""
+    if "db" not in g:
+        g.db = watcher.db_connect(cfg())
+        g.db.row_factory = sqlite3.Row
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(_exc):
+    db = g.pop("db", None)
+    if db is not None:
+        db.close()
+
+
+_cache = {}
+
+
+def cached(key, ttl, fn):
+    """Small in-process cache for expensive read endpoints. Any POST clears it."""
+    hit = _cache.get(key)
+    now = time.time()
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    val = fn()
+    _cache[key] = (now, val)
+    return val
 
 
 def thr_for(phy):
@@ -62,6 +85,8 @@ def guard():
 
 @app.after_request
 def headers(resp):
+    if request.method == "POST":
+        _cache.clear()
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Cache-Control"] = "no-store"
@@ -185,8 +210,12 @@ def api_signals():
 
 @app.get("/api/activity")
 def api_activity():
-    db, now = get_db(), int(time.time())
     hours = max(1, min(int(request.args.get("hours", 24)), 168))
+    return jsonify(cached(("activity", hours), 25, lambda: _activity(hours)))
+
+
+def _activity(hours):
+    db, now = get_db(), int(time.time())
     bucket = 600 if hours <= 24 else 3600
     start = (now - hours * 3600) // bucket * bucket
     rows = db.execute(
@@ -197,8 +226,8 @@ def api_activity():
         "MAX(s.rssi) AS mx FROM sightings s LEFT JOIN devices d ON d.mac=s.mac "
         "WHERE s.ts>=? GROUP BY b ORDER BY b", (bucket, bucket, start)).fetchall()
     alerts = [r[0] for r in db.execute("SELECT ts FROM alerts WHERE ts>=? ORDER BY ts", (start,))]
-    return jsonify({"bucket": bucket, "start": start, "end": now,
-                    "rows": [dict(r) for r in rows], "alerts": alerts})
+    return {"bucket": bucket, "start": start, "end": now,
+            "rows": [dict(r) for r in rows], "alerts": alerts}
 
 
 @app.get("/api/feed")
@@ -232,7 +261,8 @@ def api_devices():
            "seen_count,(SELECT COUNT(*) FROM probes p WHERE p.mac=devices.mac) AS probe_count,"
            "(SELECT group_concat(ssid, char(10)) FROM (SELECT ssid FROM probes p WHERE p.mac=devices.mac "
            "ORDER BY last_seen DESC LIMIT 6)) AS probe_list,"
-           "(SELECT entity_id FROM entity_members m WHERE m.kind='device' AND m.ref=devices.mac) AS entity_id "
+           "(SELECT entity_id FROM entity_members m WHERE m.kind='device' AND m.ref=devices.mac) AS entity_id,"
+           "EXISTS(SELECT 1 FROM networks n WHERE n.bssid=devices.mac) AS is_network "
            f"FROM devices WHERE {where}")
     args = []
     if q:
@@ -369,6 +399,8 @@ def api_networks_del():
         return jsonify({"error": "bad bssid"}), 400
     db = get_db()
     db.execute("DELETE FROM networks WHERE bssid=?", (bssid,))
+    # Adding it as a network is what made the device known, so removing it undoes that.
+    db.execute("UPDATE devices SET known=0, src='unmarked' WHERE mac=?", (bssid,))
     db.commit()
     return jsonify({"ok": True})
 
@@ -428,6 +460,10 @@ def api_entities_delete():
 
 @app.get("/api/suggestions")
 def api_suggestions():
+    return jsonify(cached("suggestions", 120, _suggestions))
+
+
+def _suggestions():
     db = get_db()
     out = identity.suggestions(db, cfg())
     for s in out:
@@ -440,7 +476,7 @@ def api_suggestions():
                 r = db.execute("SELECT label,model,last_seen FROM vehicles WHERE vid=?", (m["ref"],)).fetchone()
                 m["title"] = (r[0] or r[1] or m["ref"]) if r else m["ref"]
                 m["phy"], m["last_seen"] = "TPMS", (r[2] if r else None)
-    return jsonify({"suggestions": out})
+    return {"suggestions": out}
 
 
 def _members(b, minimum=2):
@@ -477,6 +513,15 @@ def api_suggestions_dismiss():
     except (ValueError, TypeError) as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"ok": True})
+
+
+@app.post("/api/reset")
+def api_reset():
+    b = body()
+    if b.get("confirm") != "RESET":
+        return jsonify({"error": 'send {"confirm": "RESET"}'}), 400
+    n = watcher.reset_db(get_db(), bool(b.get("everything")))
+    return jsonify({"ok": True, "removed": n})
 
 
 @app.get("/api/ssids")

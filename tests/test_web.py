@@ -99,11 +99,19 @@ class Networks(WebBase):
         self.client.post("/api/networks", json={"bssid": "aa:bb:cc:dd:ee:01"}, headers=H)
         self.assertEqual(self.row("aa:bb:cc:dd:ee:01")[0::2], (1, None))
 
-    def test_remove_keeps_device_known(self):
+    def test_remove_undoes_the_network_and_unmarks_the_device(self):
         self.client.post("/api/networks", json={"bssid": "aa:bb:cc:dd:ee:01"}, headers=H)
+        d = self.client.get("/api/devices?filter=all").get_json()["devices"][0]
+        self.assertEqual(d["is_network"], 1)
         self.client.post("/api/networks/delete", json={"bssid": "aa:bb:cc:dd:ee:01"}, headers=H)
         self.assertEqual(self.client.get("/api/networks").get_json()["networks"], [])
-        self.assertEqual(self.row("aa:bb:cc:dd:ee:01")[0], 1)
+        self.assertEqual(self.row("aa:bb:cc:dd:ee:01")[0], 0)
+        d = self.client.get("/api/devices?filter=all").get_json()["devices"][0]
+        self.assertEqual(d["is_network"], 0)
+        # a later sighting must not quietly make it known again
+        from tests.helpers import rec
+        watcher.ingest(self.db, rec("aa:bb:cc:dd:ee:01"), 5000, watcher.home_set(self.cfg, self.db))
+        self.assertEqual(self.row("aa:bb:cc:dd:ee:01")[0], 0)
 
     def test_watcher_uses_ui_added_network_for_clients(self):
         self.client.post("/api/networks", json={"bssid": "aa:bb:cc:00:00:01"}, headers=H)

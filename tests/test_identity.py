@@ -361,6 +361,89 @@ class Api(Base):
         self.assertEqual(self.client.get("/api/suggestions").status_code, 200)
 
 
+class Reset(Base):
+    def populate(self):
+        self.dev("00:10:20:30:40:50")
+        watcher.ingest(self.db, probe_rec("da:aa:aa:aa:aa:01", ["Cabin"]), NOW, frozenset())
+        tpms.record(self.cfg, self.db, tpms.parse(json.dumps({"model": "T", "type": "TPMS", "id": "1"})), NOW, {})
+        eid = identity.create_entity(self.db, "Bob")
+        identity.add_member(self.db, eid, "device", "00:10:20:30:40:50")
+        self.db.execute("INSERT INTO networks VALUES('aa:bb:cc:00:00:01','Router',1)")
+        self.db.execute("INSERT INTO home_ssids VALUES('FooFoo1',1)")
+        watcher.meta_set(self.db, "mode", "home")
+        watcher.meta_set(self.db, "baseline_max", 7)
+        self.db.commit()
+
+    def count(self, t):
+        return self.db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+
+    def test_reset_clears_discovered_and_keeps_my_networks(self):
+        self.populate()
+        watcher.reset_db(self.db)
+        for t in watcher.DISCOVERED:
+            self.assertEqual(self.count(t), 0, t)
+        self.assertEqual((self.count("networks"), self.count("home_ssids")), (1, 1))
+        self.assertEqual(watcher.meta_get(self.db, "mode"), "learning")
+        self.assertIsNone(watcher.meta_get(self.db, "baseline_max"))
+
+    def test_reset_everything(self):
+        self.populate()
+        watcher.reset_db(self.db, everything=True)
+        self.assertEqual((self.count("networks"), self.count("home_ssids")), (0, 0))
+
+    def test_sightings_are_recorded_again_after_reset(self):
+        self.populate()
+        watcher.reset_db(self.db)
+        self.dev("00:10:20:30:40:50", now=NOW + 1)
+        self.assertEqual(self.count("sightings"), 1)
+
+    def test_api_requires_confirmation(self):
+        self.populate()
+        web._cfg = self.cfg
+        try:
+            c = web.app.test_client()
+            self.assertEqual(c.post("/api/reset", headers=H, json={}).status_code, 400)
+            self.assertEqual(c.post("/api/reset", headers=H, json={"confirm": "yes"}).status_code, 400)
+            self.assertEqual(self.count("devices"), 2)
+            r = c.post("/api/reset", headers=H, json={"confirm": "RESET"})
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(self.count("devices"), 0)
+            self.assertEqual(self.count("networks"), 1)
+        finally:
+            web._cfg = None
+
+    def test_cli_cancelled_without_confirmation(self):
+        import argparse, io, contextlib
+        from unittest import mock
+        self.populate()
+        with mock.patch("builtins.input", return_value="no"), contextlib.redirect_stdout(io.StringIO()):
+            watcher.cmd_reset(self.cfg, self.db, argparse.Namespace(yes=False, everything=False))
+        self.assertEqual(self.count("devices"), 2)
+        with contextlib.redirect_stdout(io.StringIO()):
+            watcher.cmd_reset(self.cfg, self.db, argparse.Namespace(yes=True, everything=False))
+        self.assertEqual(self.count("devices"), 0)
+
+
+class Throttle(Base):
+    def test_one_sighting_per_interval(self):
+        for k in range(5):
+            self.dev("00:10:20:30:40:50", now=NOW + k * 2)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM sightings").fetchone()[0], 1)
+        self.dev("00:10:20:30:40:50", now=NOW + 12)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM sightings").fetchone()[0], 2)
+        self.assertEqual(self.db.execute("SELECT seen_count FROM devices").fetchone()[0], 6)
+
+    def test_clock_going_backwards_does_not_stall_recording(self):
+        self.dev("00:10:20:30:40:50", now=NOW + 5000)
+        self.dev("00:10:20:30:40:50", now=NOW)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM sightings").fetchone()[0], 2)
+
+    def test_presence_recorded_once_per_bucket(self):
+        for k in range(5):
+            self.dev("00:10:20:30:40:50", now=NOW + k * 20)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM presence").fetchone()[0], 1)
+
+
 class Doctor(Base):
     def test_doctor_reports_fields(self):
         devs = [

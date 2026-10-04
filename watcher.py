@@ -45,6 +45,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS sightings (
     ts INTEGER, mac TEXT, phy TEXT, rssi INTEGER, rand INTEGER);
 CREATE INDEX IF NOT EXISTS ix_sightings_ts ON sightings(ts);
+CREATE INDEX IF NOT EXISTS ix_sightings_mac_ts ON sightings(mac, ts);
 CREATE TABLE IF NOT EXISTS devices (
     mac TEXT PRIMARY KEY, phy TEXT, manuf TEXT, name TEXT, rand INTEGER,
     first_seen INTEGER, last_seen INTEGER, max_rssi INTEGER,
@@ -69,8 +70,7 @@ CREATE TABLE IF NOT EXISTS entity_members (
 CREATE TABLE IF NOT EXISTS dismissed (a TEXT, b TEXT, PRIMARY KEY(a, b));
 CREATE TABLE IF NOT EXISTS vehicle_pairs (
     a TEXT, b TEXT, n INTEGER, last_seen INTEGER, PRIMARY KEY(a, b));
-CREATE TABLE IF NOT EXISTS vehicle_sightings (ts INTEGER, vid TEXT);
-CREATE INDEX IF NOT EXISTS ix_vs_ts ON vehicle_sightings(ts);
+CREATE TABLE IF NOT EXISTS presence (bucket INTEGER, ref TEXT, PRIMARY KEY(bucket, ref)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS networks (
     bssid TEXT PRIMARY KEY, label TEXT, added INTEGER);
 """
@@ -85,11 +85,18 @@ def load_cfg():
     return cp
 
 
+_schema_ready = set()
+
+
 def db_connect(cfg):
     path = cfg.get("detect", "db_path")
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     db = sqlite3.connect(path, timeout=10)
+    db.execute("PRAGMA busy_timeout=10000")
+    if path in _schema_ready:  # schema and migrations run once per process, not per web request
+        return db
     db.execute("PRAGMA journal_mode=WAL")  # lets the web app read while the watcher writes
+    db.execute("PRAGMA synchronous=NORMAL")
     db.executescript(SCHEMA)
     # Who made a device known: NULL (you, home_bssids or arm), 'unifi', or 'unmarked'
     # (you removed it by hand, so automatic sources leave it alone).
@@ -98,6 +105,7 @@ def db_connect(cfg):
         if col not in cols:
             db.execute(f"ALTER TABLE devices ADD COLUMN {col} {ddl}")
     db.commit()
+    _schema_ready.add(path)
     return db
 
 
@@ -219,6 +227,10 @@ def random_count(db, cfg, now):
     return row[0] or 0
 
 
+SIGHTING_INTERVAL = 10   # seconds; at most one stored sighting per device per interval
+_last_sighting = {}
+
+
 def ingest(db, d, now, home=frozenset(), home_ssids=frozenset()):
     """Log one Kismet device record.
 
@@ -241,7 +253,10 @@ def ingest(db, d, now, home=frozenset(), home_ssids=frozenset()):
     if ssids:
         identity.record_probes(db, mac, ssids, now)
     rand = 0 if at_home else is_random(phy, mac, manuf)
-    db.execute("INSERT INTO sightings VALUES(?,?,?,?,?)", (now, mac, phy, rssi, rand))
+    if not 0 <= now - _last_sighting.get(mac, -10**12) < SIGHTING_INTERVAL:
+        _last_sighting[mac] = now
+        db.execute("INSERT INTO sightings VALUES(?,?,?,?,?)", (now, mac, phy, rssi, rand))
+    db.execute("INSERT OR IGNORE INTO presence(bucket,ref) VALUES(?,?)", (now // identity.BUCKET, "device:" + mac))
     db.execute(
         "INSERT INTO devices(mac,phy,manuf,name,rand,first_seen,last_seen,max_rssi,seen_count,known) "
         "VALUES(?,?,?,?,?,?,?,?,1,?) ON CONFLICT(mac) DO UPDATE SET "
@@ -263,7 +278,7 @@ def purge(db, cfg, now):
     db.execute("DELETE FROM probes WHERE last_seen<? AND mac NOT IN "
                "(SELECT ref FROM entity_members WHERE kind='device')", (cutoff,))
     db.execute("DELETE FROM probes WHERE mac NOT IN (SELECT mac FROM devices)")
-    db.execute("DELETE FROM vehicle_sightings WHERE ts<?", (cutoff,))
+    db.execute("DELETE FROM presence WHERE bucket<?", (cutoff // identity.BUCKET,))
     db.commit()
 
 
@@ -273,6 +288,8 @@ def run(cfg, db, once=False):
     gap = cfg.getint("detect", "gap_seconds")
     cooldown = cfg.getint("detect", "alert_cooldown_minutes") * 60
     confirm = cfg.getint("detect", "burst_confirm_seconds")
+    global SIGHTING_INTERVAL
+    SIGHTING_INTERVAL = cfg.getint("detect", "sighting_interval_seconds", fallback=SIGHTING_INTERVAL)
 
     if meta_get(db, "mode") is None:
         meta_set(db, "mode", "learning")
@@ -427,6 +444,42 @@ def cmd_doctor(cfg, db, args):
         print("  They contain MAC addresses and names of nearby devices. Review before sharing.")
 
 
+DISCOVERED = ("sightings", "devices", "probes", "counts", "alerts", "vehicles", "vehicle_pairs",
+              "presence", "dismissed", "entity_members", "entities")
+
+
+def reset_db(db, everything=False):
+    """Forget everything the sensor has discovered and start learning again.
+
+    Keeps your own network list (My networks, My network names) unless `everything`.
+    Returns the number of rows removed.
+    """
+    n = 0
+    tables = list(DISCOVERED) + (["networks", "home_ssids"] if everything else [])
+    for t in tables:
+        n += db.execute(f"DELETE FROM {t}").rowcount
+    db.execute("DELETE FROM meta")
+    db.commit()
+    meta_set(db, "mode", "learning")
+    meta_set(db, "learning_start", int(time.time()))
+    _last_sighting.clear()
+    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return n
+
+
+def cmd_reset(cfg, db, args):
+    if not args.yes:
+        what = "everything, including My networks and My network names" if args.everything else \
+            "all discovered devices, sightings, entities and alerts (My networks and SSIDs are kept)"
+        print(f"This deletes {what}, and restarts the learning period.")
+        if input("Type RESET to continue: ").strip() != "RESET":
+            print("Cancelled.")
+            return
+    n = reset_db(db, args.everything)
+    db.execute("VACUUM")  # give the disk space back
+    print(f"Removed {n} rows. Mode is now learning.")
+
+
 def cmd_status(cfg, db, args):
     now = int(time.time())
     total = db.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
@@ -526,6 +579,9 @@ def main():
     sub.add_parser("status")
     p = sub.add_parser("doctor", help="check Kismet and the fields Tripline relies on")
     p.add_argument("--dump", metavar="FILE", help="also save 5 raw device records, for debugging")
+    p = sub.add_parser("reset", help="delete all discovered data and restart learning")
+    p.add_argument("--everything", action="store_true", help="also remove My networks and My network names")
+    p.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     sub.add_parser("arm", help="end learning, mark baseline, switch to home mode")
     sub.add_parser("home")
     sub.add_parser("away")
@@ -546,7 +602,7 @@ def main():
         return
     {"status": cmd_status, "arm": cmd_arm, "home": cmd_mode("home"),
      "away": cmd_mode("away"), "guest": cmd_guest, "known": cmd_known,
-     "report": cmd_report, "doctor": cmd_doctor}[args.cmd](cfg, db, args)
+     "report": cmd_report, "doctor": cmd_doctor, "reset": cmd_reset}[args.cmd](cfg, db, args)
 
 
 if __name__ == "__main__":

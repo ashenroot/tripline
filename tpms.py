@@ -51,7 +51,7 @@ def record(cfg, db, msg, now, last_alert, recent=None):
         "VALUES(?,?,?,?,?,1,0,?,?) ON CONFLICT(vid) DO UPDATE SET last_seen=excluded.last_seen, "
         "seen_count=seen_count+1, last_rssi=excluded.last_rssi, last_freq=excluded.last_freq",
         (msg["vid"], msg["model"], msg["id"], now, now, msg["rssi"], msg["freq"]))
-    db.execute("INSERT INTO vehicle_sightings(ts,vid) VALUES(?,?)", (now, msg["vid"]))
+    db.execute("INSERT OR IGNORE INTO presence(bucket,ref) VALUES(?,?)", (now // identity.BUCKET, "vehicle:" + msg["vid"]))
     if recent is not None:
         identity.note_tpms(db, recent, msg["vid"], now)
     db.commit()

@@ -192,10 +192,19 @@ to start on a non-loopback address without a password. Basic auth over plain HTT
 unencrypted, so keep it on a network you trust. Write requests need an `X-Requested-With`
 header (CSRF guard), and device strings are rendered as text only.
 
+In the Devices tab, **My network** marks a device's BSSID as one of your access points, and the
+button becomes **Not my network** (also available in the My networks list), which undoes it and
+marks the device unknown again. The **Reset** section removes everything discovered (devices,
+sightings, probes, vehicles, entities, alerts) and restarts learning. It keeps My networks and
+My network names unless you tick the box to clear those too.
+
 ## CLI
 
 `python3 watcher.py <command>` with `TRIPLINE_CONFIG` set: `status`, `report [--hours N]`,
-`arm`, `home`, `away`, `guest HOURS|off`, `known add|del|list`.
+`arm`, `home`, `away`, `guest HOURS|off`, `known add|del|list`, and
+`reset [--everything] [--yes]` (wipes discovered data; `--everything` also clears My networks and
+names). `sighting_interval_seconds` in the config (default 10) limits how often one device is
+recorded, which keeps the database and the dashboard fast.
 
 ## Tests
 

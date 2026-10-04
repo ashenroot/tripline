@@ -291,10 +291,8 @@ def cooccurrence_evidence(db, now=None):
     now = int(now or time.time())
     since = now - COOCCUR_DAYS * 86400
     buckets = {}
-    for mac, b in db.execute("SELECT mac, ts/? FROM sightings WHERE ts>=? GROUP BY mac, ts/?", (BUCKET, since, BUCKET)):
-        buckets.setdefault(_key("device", mac), set()).add(b)
-    for vid, b in db.execute("SELECT vid, ts/? FROM vehicle_sightings WHERE ts>=? GROUP BY vid, ts/?", (BUCKET, since, BUCKET)):
-        buckets.setdefault(_key("vehicle", vid), set()).add(b)
+    for ref, b in db.execute("SELECT ref, bucket FROM presence WHERE bucket>=?", (since // BUCKET,)):
+        buckets.setdefault(ref, set()).add(b)
     span = max(1, (now - since) // BUCKET)
     cand = {k: s for k, s in buckets.items() if MIN_SHARED_BUCKETS <= len(s) <= ALWAYS_PRESENT * span}
     by_bucket = {}

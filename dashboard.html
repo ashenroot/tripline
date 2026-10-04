@@ -109,6 +109,8 @@ dialog{background:var(--panel2);color:var(--text);border:1px solid var(--line);b
 dialog::backdrop{background:rgba(0,0,0,.6)}
 dialog label{display:block;margin-top:10px;font-size:12px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase}
 dialog input,dialog select{width:100%;margin-top:4px}
+.toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:20;max-width:min(92vw,420px);background:var(--panel2);border:1px solid var(--red);color:var(--text);border-radius:10px;padding:10px 14px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+.danger-zone{margin-top:28px;padding-top:14px;border-top:1px solid var(--line)}
 .hidden,[hidden]{display:none!important}
 </style>
 </head>
@@ -247,6 +249,14 @@ dialog input,dialog select{width:100%;margin-top:4px}
       <tbody id="dev-body"></tbody>
     </table>
   </div>
+  <div class="danger-zone">
+    <h2>Reset</h2>
+    <p class="dim" style="margin:0 0 8px">Deletes every discovered device, sighting, vehicle, entity and alert, and restarts the learning period. Your My networks list and network names are kept unless you choose to remove them too.</p>
+    <div class="row">
+      <button class="btn danger" id="reset-btn">Reset discovered data</button>
+      <label class="dim"><input type="checkbox" id="reset-all"> also remove My networks and names</label>
+    </div>
+  </div>
 </section>
 
 <section id="view-ent" class="card hidden">
@@ -257,6 +267,8 @@ dialog input,dialog select{width:100%;margin-top:4px}
   <div id="ent-list"></div>
 </section>
 </main>
+
+<div class="toast hidden" id="toast" role="status"></div>
 
 <dialog id="link-dlg">
   <form method="dialog" id="link-form">
@@ -306,6 +318,24 @@ const post = (path, data) => api(path, {
   body: JSON.stringify(data || {})
 });
 
+let toastTimer = null;
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.classList.remove('hidden');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), 5000);
+}
+// Run a button action with immediate feedback; restore the button and say so if it fails.
+async function doAct(btn, fn) {
+  if (btn.disabled) return;
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = '\u2026';
+  try { await fn(); }
+  catch (e) { toast('That did not go through. Check the connection and try again.'); btn.disabled = false; btn.textContent = label; }
+}
+// Skip a refresh while the previous one is still running (a slow Pi otherwise piles up requests).
+const running = {};
+const single = (name, fn) => async (...a) => { if (running[name]) return; running[name] = true; try { return await fn(...a); } finally { running[name] = false; } };
+let lastTouch = 0, pointerIn = false;
+
 let state = null, radar = [], selected = null, tab = 'dash', lastAct = null;
 let actGeom = null, hits = [];
 
@@ -318,7 +348,7 @@ function setTab(t) {
   $('#tab-dash').setAttribute('aria-selected', t === 'dash');
   $('#tab-dev').setAttribute('aria-selected', t === 'dev');
   $('#tab-ent').setAttribute('aria-selected', t === 'ent');
-  if (t === 'dash') { resizeRadar(); resizeTl(); if (lastAct) drawActivity(lastAct); }
+  if (t === 'dash') { resizeRadar(); resizeTl(); if (lastAct) drawActivity(lastAct); tickFast(); tickSlow(); }
   if (t === 'dev') { loadSsids(); loadNetworks(); loadVehicles(); loadDevices(); }
   if (t === 'ent') loadEntities();
 }
@@ -850,7 +880,7 @@ async function loadVehicles() {
     const c4 = el('td'); const inp = el('input'); inp.type = 'text'; inp.maxLength = 40; inp.value = v.label || ''; inp.placeholder = 'label (e.g. Truck)';
     c4.appendChild(inp); tr.appendChild(c4);
     const c5 = el('td'); const b = el('button', 'btn ' + (v.known ? 'danger' : 'primary'), v.known ? 'Unmark' : 'Mark known');
-    b.onclick = async () => { await post('/api/vehicles/known', { vid: v.vid, known: !v.known, label: inp.value }); loadVehicles(); };
+    b.onclick = () => doAct(b, async () => { await post('/api/vehicles/known', { vid: v.vid, known: !v.known, label: inp.value }); await loadVehicles(); });
     c5.appendChild(b);
     const lb = el('button', 'btn', 'Link'); lb.style.marginLeft = '6px'; lb.title = 'Add to a person or household';
     lb.onclick = () => openLink('vehicle', v.vid, v.label || v.model);
@@ -992,7 +1022,8 @@ async function loadNetworks() {
     tr.appendChild(c1);
     tr.appendChild(el('td', 'dim', n.last_seen ? 'beacon seen ' + rel(now - n.last_seen) + ' ago' : 'not seen yet'));
     const c3 = el('td'); const b = el('button', 'btn danger', 'Remove');
-    b.onclick = async () => { await post('/api/networks/delete', { bssid: n.bssid }); loadNetworks(); };
+    b.textContent = 'Not my network';
+    b.onclick = () => doAct(b, async () => { await post('/api/networks/delete', { bssid: n.bssid }); await Promise.all([loadNetworks(), loadDevices()]); });
     c3.appendChild(b); tr.appendChild(c3); body.appendChild(tr);
   }
   for (const m of d.from_config) {
@@ -1036,15 +1067,19 @@ async function loadDevices() {
     inp.disabled = !!x.rand; c6.appendChild(inp); tr.appendChild(c6);
     const c7 = el('td'); const b = el('button', 'btn ' + (x.known ? 'danger' : 'primary'), x.rand ? 'rotating' : x.known ? 'Unmark' : 'Mark known');
     b.disabled = !!x.rand;
-    b.onclick = async () => {
+    b.onclick = () => doAct(b, async () => {
       if (x.known) await post('/api/known/delete', { mac: x.mac }); else await post('/api/known', { mac: x.mac, label: inp.value });
-      loadDevices();
-    };
+      await loadDevices();
+    });
     c7.appendChild(b);
     if (!x.rand && /802\.11/.test(x.phy || '')) {
-      const nb = el('button', 'btn', 'My network'); nb.title = 'Treat this device as one of my access points';
+      const nb = el('button', 'btn' + (x.is_network ? ' danger' : ''), x.is_network ? 'Not my network' : 'My network');
+      nb.title = x.is_network ? 'Remove from my networks and mark the device unknown' : 'Treat this device as one of my access points';
       nb.style.marginLeft = '6px';
-      nb.onclick = async () => { await post('/api/networks', { bssid: x.mac, label: inp.value }); loadNetworks(); loadDevices(); };
+      nb.onclick = () => doAct(nb, async () => {
+        await post(x.is_network ? '/api/networks/delete' : '/api/networks', x.is_network ? { bssid: x.mac } : { bssid: x.mac, label: inp.value });
+        await Promise.all([loadNetworks(), loadDevices()]);
+      });
       c7.appendChild(nb);
     }
     if (!x.rand) {
@@ -1058,17 +1093,31 @@ async function loadDevices() {
   if (!d.devices.length) { const tr = el('tr'); const td = el('td', 'dim', 'No devices match.'); td.colSpan = 7; tr.appendChild(td); body.appendChild(tr); }
   const bulk = $('#dev-bulk');
   bulk.classList.toggle('hidden', f !== 'unknown' || !d.devices.length);
-  bulk.onclick = async () => {
+  bulk.onclick = () => {
     if (!confirm('Mark ' + d.devices.length + ' devices as known? They stop alerting and leave the timeline.')) return;
-    await post('/api/known/bulk', { macs: d.devices.map(x => x.mac) });
-    loadDevices();
+    doAct(bulk, async () => { await post('/api/known/bulk', { macs: d.devices.map(x => x.mac) }); await loadDevices(); });
   };
 }
 $('#dev-filter').onchange = loadDevices;
 $('#dev-q').oninput = () => { clearTimeout(devTimer); devTimer = setTimeout(loadDevices, 300); };
 
+$('#reset-btn').onclick = () => {
+  const everything = $('#reset-all').checked;
+  const msg = 'This deletes all discovered devices, sightings, vehicles, entities and alerts' + (everything ? ', and your My networks list and network names' : '') + ', and restarts learning.\n\nType RESET to continue.';
+  if ((prompt(msg) || '').trim() !== 'RESET') return;
+  doAct($('#reset-btn'), async () => {
+    await post('/api/reset', { confirm: 'RESET', everything });
+    toast('Reset done. Learning has restarted.');
+    $('#reset-btn').disabled = false; $('#reset-btn').textContent = 'Reset discovered data';
+    loadSsids(); loadNetworks(); loadVehicles(); loadDevices(); tickFast();
+  });
+};
+$('#view-dev').addEventListener('pointerdown', () => { lastTouch = Date.now(); });
+$('#view-dev').addEventListener('mouseenter', () => { pointerIn = true; });
+$('#view-dev').addEventListener('mouseleave', () => { pointerIn = false; });
+
 /* ---------- polling ---------- */
-async function tickFast() {
+const tickFast = single('fast', async function () {
   try {
     const [s, r, g] = await Promise.all([api('/api/state'), api('/api/radar?window=300'), api('/api/signals?minutes=10')]);
     state = s; radar = r.devices; signals = g; signalsAt = performance.now();
@@ -1076,16 +1125,22 @@ async function tickFast() {
     $('#n-known').textContent = nk; $('#n-rand').textContent = nr >= 80 ? '80+' : nr;
     renderState(); updateSelLive();
   } catch (e) { setOnline(false); }
-}
-async function tickSlow() {
+});
+const tickSlow = single('slow', async function () {
   try {
     const [f, a] = await Promise.all([api('/api/feed?limit=40'), api('/api/activity?hours=24')]);
     renderFeed(f.items); drawActivity(a); loadSpark();
   } catch (e) { /* the fast tick reports connectivity */ }
-}
-setInterval(() => { if (!document.hidden) tickFast(); }, 5000);
-setInterval(() => { if (!document.hidden) tickSlow(); }, 30000);
-setInterval(() => { if (tab === 'dev' && !document.hidden && document.activeElement.tagName !== 'INPUT') loadDevices(); }, 15000);
+});
+setInterval(() => { if (!document.hidden && tab === 'dash') tickFast(); }, 5000);
+setInterval(() => { if (!document.hidden && tab === 'dash') tickSlow(); }, 30000);
+const autoDevices = single('devices', async () => { await loadDevices(); await loadVehicles(); });
+setInterval(() => {
+  // Rebuilding the table under the pointer swallows clicks, so only refresh when nobody is using it.
+  if (tab !== 'dev' || document.hidden || pointerIn || Date.now() - lastTouch < 20000) return;
+  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+  autoDevices();
+}, 15000);
 setInterval(() => { const d = new Date(); $('#clock').textContent = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }, 1000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { tickFast(); tickSlow(); } });
 syncFilters(); setView('timeline'); tickFast(); tickSlow();
