@@ -111,6 +111,15 @@ dialog{background:var(--panel2);color:var(--text);border:1px solid var(--line);b
 #view-dev tbody tr.dev-row{cursor:pointer}#view-dev tbody tr.dev-row:hover{background:rgba(125,146,168,.08)}
 .hbars{display:flex;align-items:flex-end;gap:2px;height:36px;margin-top:6px}
 .hbars i{flex:1;background:var(--accent);min-height:1px;border-radius:2px;opacity:.85}
+#filters{position:relative}
+.pick-panel{position:absolute;z-index:6;top:calc(100% + 4px);left:0;width:min(400px,100%);background:var(--panel2);border:1px solid var(--line);
+  border-radius:12px;padding:10px;box-shadow:0 12px 32px rgba(0,0,0,.55)}
+.pick-panel .row{margin:0 0 8px}
+.pick-list{max-height:300px;overflow:auto;border-top:1px solid var(--line)}
+.pick-item{display:grid;grid-template-columns:auto auto 1fr auto;gap:8px;align-items:center;padding:5px 2px;cursor:pointer;border-bottom:1px solid rgba(27,42,58,.6);font-size:13px}
+.pick-item:hover{background:rgba(125,146,168,.08)}
+.pick-item .dotc{width:9px;height:9px;border-radius:50%}
+.pick-item small{color:var(--dim);font:11px var(--mono);overflow-wrap:anywhere}
 dialog::backdrop{background:rgba(0,0,0,.6)}
 dialog label{display:block;margin-top:10px;font-size:12px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase}
 dialog input,dialog select{width:100%;margin-top:4px}
@@ -148,6 +157,23 @@ dialog input,dialog select{width:100%;margin-top:4px}
         <span class="lbl">Show</span>
         <button class="btn" id="chip-known" aria-pressed="false">Known <span class="dim" id="n-known"></span></button>
         <button class="btn" id="chip-rand" aria-pressed="false">Rotating <span class="dim" id="n-rand"></span></button>
+        <button class="btn" id="pick-btn" aria-expanded="false" aria-controls="pick-panel">Choose devices</button>
+        <div class="pick-panel hidden" id="pick-panel" role="dialog" aria-label="Choose which devices are drawn">
+          <div class="row">
+            <input type="search" id="pick-q" placeholder="Search name, vendor, MAC" aria-label="Search devices" style="flex:1;min-width:120px">
+            <select id="pick-radio" aria-label="Radio"><option value="">Wi-Fi and Bluetooth</option><option value="wifi">Wi-Fi</option><option value="bt">Bluetooth</option></select>
+            <select id="pick-class" aria-label="Class"><option value="">All kinds</option><option value="unk">Unknown</option><option value="known">Known</option><option value="rand">Rotating</option></select>
+          </div>
+          <div class="row">
+            <button class="btn" id="pick-all">Show all listed</button>
+            <button class="btn" id="pick-none">Hide all listed</button>
+            <button class="btn" id="pick-unk">Only unknown</button>
+            <button class="btn" id="pick-top">Strongest 10</button>
+            <button class="btn danger" id="pick-auto">Back to automatic</button>
+          </div>
+          <div class="dim" id="pick-count" style="margin-bottom:6px"></div>
+          <div class="pick-list" id="pick-list"></div>
+        </div>
       </div>
       <div class="tl-wrap" id="wrap-tl">
         <canvas id="timeline" aria-label="Signal strength over the last 10 minutes, one trace per device"></canvas>
@@ -173,7 +199,7 @@ dialog input,dialog select{width:100%;margin-top:4px}
 
   <div class="col">
     <div class="tiles">
-      <div class="tile click" id="t-mode" tabindex="0" role="button" title="Go to the controls"><div class="k">Mode</div><div class="v" id="v-mode">-</div><div class="s" id="s-mode"></div><div class="bar hidden" id="b-learn"><div class="fill" id="f-learn" style="width:0"></div></div></div>
+      <div class="tile"><div class="k">Mode</div><div class="v" id="v-mode">-</div><div class="s" id="s-mode"></div><div class="bar hidden" id="b-learn"><div class="fill" id="f-learn" style="width:0"></div></div></div>
       <div class="tile click" id="t-unk" tabindex="0" role="button" title="Show these devices"><div class="k">Unknown nearby</div><div class="v" id="v-unk">-</div><div class="s" id="s-unk"></div></div>
       <div class="tile click" id="t-rand" tabindex="0" role="button" title="Show these devices"><div class="k">Rotating devices</div><div class="v c-blue" id="v-rand">-</div><div class="s" id="s-rand"></div><div class="bar"><div class="fill" id="f-rand" style="width:0"></div><div class="mark hidden" id="m-rand"></div></div></div>
       <div class="tile click" id="t-alerts" tabindex="0" role="button" title="Show these alerts"><div class="k">Alerts 24h</div><div class="v" id="v-alerts">-</div><div class="s" id="s-alerts"></div></div>
@@ -608,7 +634,10 @@ function drawTimeline(t) {
   c.strokeStyle = 'rgba(53,224,194,0.55)'; c.lineWidth = 1;
   c.beginPath(); c.moveTo(L + pw, T); c.lineTo(L + pw, T + ph); c.stroke();
   c.font = '10px ' + MONO;
-  for (const it of items) {
+  // Labels are drawn most important first, and skipped where they would sit on top of one already drawn.
+  const usedY = [];
+  const labelOrder = items.slice().sort((a, b) => PRIORITY[b.cls] - PRIORITY[a.cls] || b.last[1] - a.last[1]);
+  for (const it of labelOrder) {
     if (it.cls === 'rand' || tNow - it.last[0] > 30) continue;
     const x = Math.min(X(it.last[0]), L + pw), y = Y(it.last[1]), col = TL_STYLE[it.cls][0];
     c.fillStyle = col; c.shadowBlur = TL_STYLE[it.cls][2]; c.shadowColor = col;
@@ -619,8 +648,10 @@ function drawTimeline(t) {
       c.beginPath(); c.arc(x, y, 4 + pp * 14, 0, TAU); c.stroke();
     }
     const name = it.s.label || it.s.name || it.s.manuf || it.s.mac.slice(9);
+    if (usedY.some(u => Math.abs(u - y) < 11)) continue;
+    usedY.push(y);
     c.fillStyle = col; c.textAlign = 'left'; c.textBaseline = 'middle';
-    c.fillText(name, x + 9, y - (it.cls === 'alert' ? 0 : 0), Rm - 14);
+    c.fillText(name, x + 9, y, Rm - 14);
   }
   c.fillStyle = 'rgba(53,224,194,0.9)'; c.textAlign = 'center'; c.textBaseline = 'alphabetic';
   c.fillText('now', L + pw, TH - 8);
@@ -663,7 +694,13 @@ tl.addEventListener('pointerdown', e => {
 // Known and rotating devices are hidden by default so only unknown static devices show.
 let show = { known: false, rand: false };
 try { Object.assign(show, JSON.parse(localStorage.getItem('tripline.show') || '{}')); } catch (e) { /* storage unavailable */ }
-const visible = d => !(d.rand && !show.rand) && !(d.known && !show.known);
+// pick: null means the Known and Rotating chips decide; a Set means exactly those devices are drawn.
+let pick = null;
+try { const p = JSON.parse(localStorage.getItem('tripline.pick') || 'null'); if (Array.isArray(p)) pick = new Set(p.slice(0, 300)); } catch (e) { /* storage unavailable */ }
+const visible = d => pick ? pick.has(d.mac) : !(d.rand && !show.rand) && !(d.known && !show.known);
+function savePick() {
+  try { if (pick) localStorage.setItem('tripline.pick', JSON.stringify([...pick].slice(0, 300))); else localStorage.removeItem('tripline.pick'); } catch (e) { /* ignore */ }
+}
 function syncFilters() {
   $('#chip-known').setAttribute('aria-pressed', show.known);
   $('#chip-rand').setAttribute('aria-pressed', show.rand);
@@ -671,6 +708,77 @@ function syncFilters() {
 }
 $('#chip-known').onclick = () => { show.known = !show.known; syncFilters(); };
 $('#chip-rand').onclick = () => { show.rand = !show.rand; syncFilters(); };
+
+/* ---------- choose which devices are drawn ---------- */
+const pickPanel = $('#pick-panel');
+function pickRows() {
+  const q = $('#pick-q').value.trim().toLowerCase(), radio = $('#pick-radio').value, cls = $('#pick-class').value;
+  const rows = (signals ? signals.series : []).map(s => {
+    const last = s.pts[s.pts.length - 1];
+    return { s, last, cls: s.rand ? 'rand' : s.known ? 'known' : (last[1] >= s.floor ? 'alert' : 'unk') };
+  }).filter(r => {
+    const bt = /bluetooth|btle/i.test(r.s.phy || '');
+    if (radio === 'bt' && !bt) return false;
+    if (radio === 'wifi' && bt) return false;
+    if (cls && (cls === 'unk' ? !['unk', 'alert'].includes(r.cls) : r.cls !== cls)) return false;
+    if (q && !((r.s.label || '') + ' ' + (r.s.name || '') + ' ' + (r.s.manuf || '') + ' ' + r.s.mac).toLowerCase().includes(q)) return false;
+    return true;
+  });
+  rows.sort((a, b) => PRIORITY[b.cls] - PRIORITY[a.cls] || b.last[1] - a.last[1]);
+  return rows;
+}
+function setPick(macs) { pick = new Set(macs); savePick(); syncPickBtn(); renderPicker(); }
+function syncPickBtn() {
+  const b = $('#pick-btn');
+  b.textContent = pick ? 'Devices: ' + pick.size + ' chosen' : 'Choose devices';
+  b.setAttribute('aria-pressed', !!pick);
+  ['#chip-known', '#chip-rand'].forEach(id => { $(id).style.opacity = pick ? '.45' : ''; $(id).title = pick ? 'Your device selection is active. Choose "Back to automatic" to use these.' : ''; });
+}
+function renderPicker() {
+  if (pickPanel.classList.contains('hidden')) return;
+  const rows = pickRows(), list = $('#pick-list'), top = list.scrollTop;
+  list.replaceChildren();
+  const total = signals ? signals.series.length : 0;
+  $('#pick-count').textContent = rows.length + ' listed of ' + total + ' heard in the last 10 minutes'
+    + (pick ? '. Drawing ' + pick.size + ' chosen.' : '. Automatic: the Known and Rotating chips decide.');
+  const colors = { alert: 'var(--red)', unk: 'var(--amber)', known: 'var(--green)', rand: 'var(--blue)' };
+  for (const r of rows) {
+    const on = pick ? pick.has(r.s.mac) : visible(r.s);
+    const it = el('label', 'pick-item');
+    const cb = el('input'); cb.type = 'checkbox'; cb.checked = on;
+    cb.onchange = () => {
+      if (!pick) pick = new Set((signals ? signals.series : []).filter(visible).map(x => x.mac));
+      if (cb.checked) pick.add(r.s.mac); else pick.delete(r.s.mac);
+      savePick(); syncPickBtn(); renderPicker();
+    };
+    const dot = el('span', 'dotc'); dot.style.background = colors[r.cls];
+    const name = el('span'); name.appendChild(el('div', null, r.s.label || r.s.name || r.s.manuf || (r.s.rand ? 'Rotating address' : 'Unknown vendor')));
+    name.appendChild(el('small', null, r.s.mac + (/bluetooth|btle/i.test(r.s.phy || '') ? ' \u00b7 Bluetooth' : ' \u00b7 Wi-Fi')));
+    it.appendChild(cb); it.appendChild(dot); it.appendChild(name); it.appendChild(el('small', null, r.last[1] + ' dBm'));
+    list.appendChild(it);
+  }
+  if (!rows.length) list.appendChild(Object.assign(el('div', 'dim', 'No devices match.'), { style: 'padding:10px 2px' }));
+  list.scrollTop = top;
+}
+function togglePicker(open) {
+  const show_ = open === undefined ? pickPanel.classList.contains('hidden') : open;
+  pickPanel.classList.toggle('hidden', !show_);
+  $('#pick-btn').setAttribute('aria-expanded', show_);
+  if (show_) { renderPicker(); $('#pick-q').focus(); }
+}
+$('#pick-btn').onclick = () => togglePicker();
+['#pick-q', '#pick-radio', '#pick-class'].forEach(id => { $(id).oninput = renderPicker; $(id).onchange = renderPicker; });
+$('#pick-all').onclick = () => setPick([...(pick || visibleSet()), ...pickRows().map(r => r.s.mac)]);
+$('#pick-none').onclick = () => { const gone = new Set(pickRows().map(r => r.s.mac)); setPick([...(pick || visibleSet())].filter(m => !gone.has(m))); };
+$('#pick-unk').onclick = () => setPick((signals ? signals.series : []).filter(s => !s.rand && !s.known).map(s => s.mac));
+$('#pick-top').onclick = () => setPick((signals ? signals.series : []).slice().sort((a, b) => b.peak - a.peak).slice(0, 10).map(s => s.mac));
+$('#pick-auto').onclick = () => { pick = null; savePick(); syncPickBtn(); renderPicker(); };
+const visibleSet = () => new Set((signals ? signals.series : []).filter(visible).map(s => s.mac));
+document.addEventListener('keydown', e => { if (e.key === 'Escape') togglePicker(false); });
+document.addEventListener('pointerdown', e => {
+  if (!pickPanel.classList.contains('hidden') && !pickPanel.contains(e.target) && e.target !== $('#pick-btn')) togglePicker(false);
+});
+syncPickBtn();
 
 function setView(v) {
   view = v;
@@ -1317,7 +1425,6 @@ const tileKey = (id, fn) => { const t = $(id); t.onclick = fn; t.onkeydown = ev 
 tileKey('#t-unk', () => showDevices('unknown_now'));
 tileKey('#t-rand', () => showDevices('rotating_now'));
 tileKey('#t-alerts', openAlerts);
-tileKey('#t-mode', () => $('#m-home').scrollIntoView({ behavior: 'smooth', block: 'center' }));
 
 $('#dev-filter').onchange = loadDevices;
 $('#dev-radio').onchange = loadDevices;
@@ -1342,7 +1449,7 @@ $('#view-dev').addEventListener('mouseleave', () => { pointerIn = false; });
 const tickFast = single('fast', async function () {
   try {
     const [s, r, g] = await Promise.all([api('/api/state'), api('/api/radar?window=300'), api('/api/signals?minutes=10')]);
-    state = s; radar = r.devices; signals = g; signalsAt = performance.now();
+    state = s; radar = r.devices; signals = g; signalsAt = performance.now(); renderPicker();
     const nk = g.series.filter(x => x.known).length, nr = g.series.filter(x => x.rand).length;
     $('#n-known').textContent = nk; $('#n-rand').textContent = nr >= 80 ? '80+' : nr;
     renderState(); updateSelLive();

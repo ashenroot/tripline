@@ -160,7 +160,7 @@ live" turns to "no sightings in 2 min" when Kismet stops reporting).
 
 | Tile | Shows | Click |
 |---|---|---|
-| Mode | `LEARNING`, `HOME` or `AWAY`, and in learning a progress bar toward 14 days | Scrolls to the controls |
+| Mode | `LEARNING`, `HOME` or `AWAY`, and in learning a progress bar toward 14 days | Display only |
 | Unknown nearby | Distinct non-rotating, unknown devices heard in the last 60 seconds, with a count of known static devices nearby | Devices tab, "Unknown nearby now" |
 | Rotating devices | Distinct rotating addresses above the signal floor in the last `random_window_seconds`, with the alert limit and the household peak | Devices tab, "Rotating nearby now" |
 | Alerts 24h | Alerts raised in the last day and the most recent one | A list of those alerts |
@@ -175,6 +175,15 @@ known, blue is a rotating address. Tap a trace or a blip to see the device under
 **Show chips.** Known and Rotating are off by default, so only unknown static devices are
 drawn. Turn them on to see everything. The setting is saved in that browser only, so two
 computers can look different until their chips match.
+
+**Choose devices.** When the timeline is crowded, the Choose devices button opens a panel listing every
+device heard in the last 10 minutes, with its color, name, MAC, radio and latest signal. Tick the
+ones to draw. Search by name, vendor or MAC; filter by Wi-Fi or Bluetooth and by unknown, known or
+rotating. The shortcuts are Show all listed, Hide all listed, Only unknown and Strongest 10. Once
+you choose, exactly those devices are drawn on both the timeline and the radar, and the Known and
+Rotating chips dim. Back to automatic returns to the chips. The selection is saved in that browser.
+On the timeline, labels at the right edge are skipped where they would overlap, with unknown
+devices labeled first.
 
 **Selected device.** MAC, type, vendor, live signal, last and first seen, sighting count, a
 one-hour signal graph, and Mark known / Update label / Unmark for static devices.
