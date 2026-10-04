@@ -509,6 +509,13 @@ class Insight(unittest.TestCase):
         self.assertEqual(m["channels"], ["11", "6"])
         self.assertEqual(insight.harvest({}), {})
 
+    def test_interesting_ignores_kismet_bookkeeping(self):
+        import insight
+        rec = {"kismet.server.uuid": "x", "kismet.device.base.seenby": [{"kismet.common.seenby.uuid": "y"}],
+               "btle.device": {"btle.device.address_type": "random", "btle.device.service_uuid_vec": ["180f"]}}
+        got = insight.interesting(rec).get("Bluetooth", [])
+        self.assertEqual({k for k, _ in got}, {"btle.device.address_type", "btle.device.service_uuid_vec"})
+
     def test_trend_and_distance(self):
         import insight
         up = [[i * 20, -80 + i * 2] for i in range(10)]

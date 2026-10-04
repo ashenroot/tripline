@@ -177,6 +177,10 @@ def _flatten(node, path="", out=None, depth=0):
     return out
 
 
+# Kismet's own bookkeeping: server and capture-source identifiers say nothing about the device.
+_NOISE = ("kismet.server", "seenby", "datasource", "kismet.device.base.key", "kismet.device.base.packets.rrd",
+          "rrd", "location")
+
 GROUPS = [
     ("Capabilities", ("ht_mode", "ht_capab", "vht_capab", "he_capab", "maxrate", "max_rate", "supported_rate",
                       "dot11d_country", "chanwidth", "channel_width", "mcs", "streams")),
@@ -196,6 +200,8 @@ def interesting(rec, limit=60):
         rows = []
         for path, v in flat.items():
             low = path.lower()
+            if any(x in low for x in _NOISE):
+                continue
             if any(f in low for f in frags) and v not in (None, "", [], 0, "0"):
                 if isinstance(v, list):
                     v = ", ".join(str(x) for x in v[:10])

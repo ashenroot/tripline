@@ -536,9 +536,13 @@ def cmd_doctor(cfg, db, args):
             note(f"could not read a Bluetooth record: {exc}")
     if args.dump:
         sample = kismet_get(cfg, f"/devices/last-time/{since}/devices.json", since=since)
+        # a mix: Bluetooth first (least understood), then Wi-Fi, so one file shows both kinds
+        bts = [x for x in sample if "luetooth" in (x.get("kismet.device.base.phyname") or "")]
+        wifi = [x for x in sample if x not in bts]
+        picked = bts[:3] + wifi[:3]
         with open(args.dump, "w") as fh:
-            json.dump(sample[:5], fh, indent=1)
-        print(f"Wrote {min(5, len(sample))} raw device records to {args.dump}.")
+            json.dump(picked, fh, indent=1)
+        print(f"Wrote {len(picked)} raw device records ({min(3, len(bts))} Bluetooth) to {args.dump}.")
         print("  They contain MAC addresses and names of nearby devices. Review before sharing.")
 
 
