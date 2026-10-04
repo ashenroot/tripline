@@ -192,6 +192,10 @@ to start on a non-loopback address without a password. Basic auth over plain HTT
 unencrypted, so keep it on a network you trust. Write requests need an `X-Requested-With`
 header (CSRF guard), and device strings are rendered as text only.
 
+An access point usually has several BSSIDs, one per SSID and band. Tripline treats a BSSID with the
+same manufacturer prefix and the same last two bytes as yours as a sibling of any BSSID you have
+added (only the middle byte differs), so adding one is enough.
+
 In the Devices tab, **My network** marks a device's BSSID as one of your access points, and the
 button becomes **Not my network** (also available in the My networks list), which undoes it and
 marks the device unknown again. The **Reset** section removes everything discovered (devices,

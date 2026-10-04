@@ -54,6 +54,19 @@ class Ingest(unittest.TestCase):
         watcher.ingest(self.db, rec("da:aa:aa:aa:aa:aa", "aa:bb:cc:00:00:01"), 1005, self.HOME)
         self.assertEqual(self.state("da:aa:aa:aa:aa:aa"), (0, 1))
 
+    def test_client_on_sibling_bssid_of_my_ap_is_known(self):
+        # same prefix and same last two bytes, only the middle byte differs (another SSID or band)
+        watcher.ingest(self.db, rec("da:11:22:33:44:55", "AA:BB:CC:07:00:01"), 1000, self.HOME)
+        self.assertEqual(self.state("da:11:22:33:44:55"), (0, 1))
+
+    def test_sibling_bssid_beacon_is_known(self):
+        watcher.ingest(self.db, rec("aa:bb:cc:09:00:01"), 1000, self.HOME)
+        self.assertEqual(self.state("aa:bb:cc:09:00:01")[1], 1)
+
+    def test_other_ap_with_same_prefix_stays_unknown(self):
+        watcher.ingest(self.db, rec("00:10:20:30:40:50", "aa:bb:cc:07:00:02"), 1000, self.HOME)
+        self.assertEqual(self.state("00:10:20:30:40:50"), (0, 0))
+
     def test_foreign_ap_stays_unknown(self):
         watcher.ingest(self.db, rec("00:10:20:30:40:50", "11:22:33:44:55:66"), 1000, self.HOME)
         self.assertEqual(self.state("00:10:20:30:40:50"), (0, 0))

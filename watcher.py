@@ -127,6 +127,26 @@ def home_set(cfg, db):
     return frozenset(out)
 
 
+def sibling_key(mac):
+    """Access points give each SSID and band its own BSSID, changing only the middle byte of the
+    base address. Two BSSIDs with the same manufacturer prefix and the same last two bytes are
+    treated as the same access point."""
+    p = (mac or "").lower().split(":")
+    return (":".join(p[:3]), ":".join(p[4:])) if len(p) == 6 else None
+
+
+def in_home(mac, home, keys=None):
+    """True if `mac` is one of your BSSIDs or a sibling BSSID of one."""
+    mac = (mac or "").lower()
+    if not mac:
+        return False
+    if mac in home:
+        return True
+    if keys is None:
+        keys = {sibling_key(h) for h in home}
+    return sibling_key(mac) in keys
+
+
 def fmt_ts(ts):
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(ts)))
 
@@ -248,7 +268,8 @@ def ingest(db, d, now, home=frozenset(), home_ssids=frozenset()):
     manuf = d.get("kismet.device.base.manuf") or ""
     name = d.get("kismet.device.base.name") or ""
     ssids = identity.extract_ssids(d.get("probes"))
-    at_home = 1 if (mac.lower() in home or (d.get("bssid") or "").lower() in home
+    keys = {sibling_key(h) for h in home}
+    at_home = 1 if (in_home(mac, home, keys) or in_home(d.get("bssid"), home, keys)
                     or any(s.casefold() in home_ssids for s in ssids)) else 0
     if ssids:
         identity.record_probes(db, mac, ssids, now)
