@@ -83,7 +83,7 @@ Afterwards leave it in `learning` mode for 1-2 weeks, then press Arm in the web 
 4. Copy `watcher.py web.py known_sync.py dashboard.html` and `sources/` to `/opt/tripline`,
    copy `config.example.ini` to `/etc/tripline/config.ini` and edit it.
 5. Copy `systemd/*.service` to `/etc/systemd/system/`, set `User=`, then
-   `sudo systemctl enable --now kismet tripline-watcher tripline-web`.
+   `sudo systemctl enable --now kismet tripline-watcher tripline-web` (add `tripline-tpms` if you use an SDR, and copy `tpms.py` too).
 
 ## Vehicle detection (RTL-SDR)
 
