@@ -106,7 +106,7 @@ td input{width:150px}
 .pair .arrow{color:var(--accent);font-size:18px}
 @media (max-width:640px){.pair{grid-template-columns:1fr}.pair .arrow{display:none}}
 dialog{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:18px;max-width:420px;width:calc(100% - 32px)}
-#dev-dlg,#alert-dlg{max-width:560px;max-height:calc(100vh - 40px);overflow:auto}
+#dev-dlg,#alert-dlg{max-width:720px;max-height:calc(100vh - 40px);overflow:auto}
 .tile.click{cursor:pointer}.tile.click:hover,.tile.click:focus-visible{border-color:var(--accent);outline:none}
 #view-dev tbody tr.dev-row{cursor:pointer}#view-dev tbody tr.dev-row:hover{background:rgba(125,146,168,.08)}
 .hbars{display:flex;align-items:flex-end;gap:2px;height:36px;margin-top:6px}
@@ -1166,12 +1166,36 @@ async function openDevice(mac) {
   if (d.ap) row('Connected to', d.ap.bssid + (d.ap.label ? ' (' + d.ap.label + ')' : d.ap.manuf ? ' (' + d.ap.manuf + ')' : '') + (d.ap.mine ? ', mine' : ', not in My networks'));
   else if (/802\.11/.test(d.phy || '')) row('Connected to', 'nothing seen (not associated, or no data traffic heard)');
   if (d.entity) row('Entity', d.entity.name + ' (' + d.entity.kind + ')');
+  const ad = d.address;
+  row('Address type', (ad.locally_administered ? 'locally administered (private or random address)' : 'globally unique (assigned to the vendor)')
+    + (ad.multicast ? ', multicast' : ''));
+  row('Vendor prefix', ad.oui);
   box.appendChild(g);
-  box.appendChild(el('div', 'dim', 'Sightings per hour, last 24 h'));
+  const sec = t => { const e = el('div', 'dim', t); e.style.marginTop = '12px'; box.appendChild(e); };
+  sec('Days seen, last 14 days (today on the right)');
+  const dg = el('div', 'hbars'); dg.style.height = '14px';
+  for (let i = 13; i >= 0; i--) { const b = el('i'); b.style.height = d.days_seen.includes(i) ? '100%' : '15%'; b.style.opacity = d.days_seen.includes(i) ? '.9' : '.25'; b.title = i ? i + ' days ago' : 'today'; dg.appendChild(b); }
+  box.appendChild(dg);
+  sec('Sightings per hour, last 24 h');
   const bars = el('div', 'hbars'); const mx = Math.max(1, ...d.hourly);
   d.hourly.forEach((n, i) => { const b = el('i'); b.style.height = Math.max(2, n / mx * 100) + '%'; b.title = (24 - i) + 'h ago: ' + n; bars.appendChild(b); });
   box.appendChild(bars);
   const spark = el('canvas'); box.appendChild(spark);
+  if (d.sessions.length) {
+    sec('Visits in the last 24 h (a gap of over 5 minutes starts a new one)');
+    const t = el('div', 'mono'); t.style.cssText = 'font-size:12px;margin-top:4px';
+    for (const s of d.sessions) t.appendChild(el('div', null, absTime(s.start) + ' to ' + hhmm(s.end) + '  (' + rel(s.end - s.start || 1) + ')  avg ' + s.avg_rssi + ' dBm, peak ' + s.peak_rssi + ' dBm'));
+    box.appendChild(t);
+  }
+  if (d.seen_with.length) {
+    sec('Most often heard at the same time (in 5-minute windows)');
+    for (const w of d.seen_with) {
+      const r = el('div', null, w.title + '  \u00B7 ' + w.together + ' windows' + (w.known ? ' \u00B7 known' : '') + (w.rand ? ' \u00B7 rotating' : ''));
+      if (w.mac) { r.style.cursor = 'pointer'; r.title = w.mac + ' (click to open)'; r.onclick = () => openDevice(w.mac); }
+      box.appendChild(r);
+    }
+  }
+  const live = el('div'); box.appendChild(live);
   if (d.probes.length) {
     box.appendChild(el('div', 'dim', 'Network names it has asked for (' + d.probes.length + ')'));
     const ul = el('div', 'mono'); ul.style.cssText = 'font-size:12px;margin-top:4px;overflow-wrap:anywhere';
@@ -1195,6 +1219,22 @@ async function openDevice(mac) {
   box.appendChild(acts);
   if (!$('#dev-dlg').open) $('#dev-dlg').showModal();
   loadSpark(d.mac, spark);
+  // What Kismet holds right now; loaded after the panel is up because Kismet can be slow to answer.
+  live.appendChild(el('div', 'dim', 'Asking Kismet for its live record\u2026'));
+  api('/api/device/' + encodeURIComponent(d.mac) + '/live').then(l => {
+    live.replaceChildren();
+    const keys = Object.keys(l.summary);
+    if (keys.length) {
+      live.appendChild(Object.assign(el('div', 'dim', 'Live from Kismet'), { style: 'margin-top:12px' }));
+      const kg = el('div', 'kv'); kg.style.marginTop = '4px';
+      for (const k of keys) { kg.appendChild(el('span', null, k)); kg.appendChild(el('span', null, String(l.summary[k]))); }
+      live.appendChild(kg);
+    }
+    const det = el('details'); det.style.marginTop = '10px';
+    det.appendChild(el('summary', 'dim', 'Raw Kismet record' + (l.truncated ? ' (truncated)' : '')));
+    const pre = el('pre', 'mono', l.raw); pre.style.cssText = 'font-size:11px;max-height:260px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere';
+    det.appendChild(pre); live.appendChild(det);
+  }).catch(() => { live.replaceChildren(el('div', 'dim', 'Kismet has no live record for this address right now.')); });
 }
 $('#dev-close').onclick = () => $('#dev-dlg').close();
 $('#alert-close').onclick = () => $('#alert-dlg').close();

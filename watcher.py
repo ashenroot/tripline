@@ -101,6 +101,7 @@ def db_connect(cfg):
     # Who made a device known: NULL (you, home_bssids or arm), 'unifi', or 'unmarked'
     # (you removed it by hand, so automatic sources leave it alone).
     cols = {r[1] for r in db.execute("PRAGMA table_info(devices)")}
+    db.execute("CREATE INDEX IF NOT EXISTS ix_presence_ref ON presence(ref)")
     for col, ddl in (("src", "TEXT"), ("synced_at", "INTEGER"), ("bssid", "TEXT")):
         if col not in cols:
             db.execute(f"ALTER TABLE devices ADD COLUMN {col} {ddl}")
@@ -162,11 +163,18 @@ def home_set(cfg, db):
 
 
 def sibling_key(mac):
-    """Access points give each SSID and band its own BSSID, changing only the middle byte of the
-    base address. Two BSSIDs with the same manufacturer prefix and the same last two bytes are
-    treated as the same access point."""
+    """Access points give each SSID and band its own BSSID. UniFi and similar gear derive them from the
+    base address by changing the middle byte and the low bits of the first byte (74:83:c2:27:02:3d and
+    7a:83:c2:27:02:3d are the same AP). Two BSSIDs are siblings when bytes 2-3 and the last two bytes
+    match and the first bytes agree in their top four bits."""
     p = (mac or "").lower().split(":")
-    return (":".join(p[:3]), ":".join(p[4:])) if len(p) == 6 else None
+    if len(p) != 6:
+        return None
+    try:
+        first = int(p[0], 16) & 0xF0
+    except ValueError:
+        return None
+    return (first, p[1], p[2], p[4], p[5])
 
 
 def in_home(mac, home, keys=None):

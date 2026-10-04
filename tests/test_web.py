@@ -77,6 +77,30 @@ class Api(WebBase):
         self.assertEqual(self.client.get("/api/device/00:00:00:00:00:99").status_code, 404)
         self.assertEqual(self.client.get("/api/device/nope").status_code, 400)
 
+    def test_device_detail_extras_and_live(self):
+        import unittest.mock as um
+        now = int(__import__("time").time())
+        self.add("00:10:20:30:40:50")
+        for ts in (now - 100, now - 90, now - 3000):
+            self.db.execute("INSERT INTO sightings VALUES(?,?,?,?,?)", (ts, "00:10:20:30:40:50", "IEEE802.11", -60, 0))
+        for ref in ("device:00:10:20:30:40:50", "device:aa:aa:aa:aa:aa:01"):
+            for b in (1, 2, 3):
+                self.db.execute("INSERT INTO presence VALUES(?,?)", (b, ref))
+        self.db.commit()
+        r = self.client.get("/api/device/00:10:20:30:40:50").get_json()
+        self.assertEqual(len(r["sessions"]), 2)
+        self.assertEqual(r["days_seen"], [0])
+        self.assertEqual(r["seen_with"][0]["ref"], "device:aa:aa:aa:aa:aa:01")
+        self.assertFalse(r["address"]["locally_administered"])
+        rec = {"kismet.device.base.type": "Wi-Fi AP", "kismet.device.base.channel": "6",
+               "dot11.device": {"dot11.device.associated_client_map": {"a": 1, "b": 2}}}
+        with um.patch.object(watcher, "kismet_get", return_value=[rec]):
+            l = self.client.get("/api/device/00:10:20:30:40:50/live").get_json()
+        self.assertEqual(l["summary"]["Clients associated"], 2)
+        self.assertIn("Wi-Fi AP", l["raw"])
+        with um.patch.object(watcher, "kismet_get", side_effect=OSError("down")):
+            self.assertEqual(self.client.get("/api/device/00:10:20:30:40:50/live").status_code, 502)
+
     def test_tile_filters_and_alert_list(self):
         now = int(__import__("time").time())
         self.add("00:10:20:30:40:50")

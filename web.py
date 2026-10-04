@@ -6,6 +6,7 @@ default. To expose it on a LAN interface, set [web] bind and [web] password in
 config.ini; the app refuses to start on a non-loopback address without a password.
 """
 import hmac
+import json
 import os
 import re
 import sqlite3
@@ -338,7 +339,107 @@ def api_device(mac):
         "SELECT ts,title,message FROM alerts WHERE message LIKE ? OR title LIKE ? ORDER BY ts DESC LIMIT 5",
         (f"%{mac}%", f"%{mac}%"))]
     out["now"] = now
+    out.update(_device_extras(db, mac, now))
     return jsonify(out)
+
+
+def _device_extras(db, mac, now):
+    """Derived facts about one device: address analysis, sessions, days seen, who it is seen with."""
+    try:
+        first = int(mac.split(":")[0], 16)
+    except ValueError:
+        first = 0
+    addr = {"locally_administered": bool(first & 2), "multicast": bool(first & 1),
+            "oui": mac[:8].upper()}
+    # Sessions: runs of sightings with no gap over 5 minutes, last 24 h.
+    sessions, cur = [], None
+    for ts, rssi in db.execute("SELECT ts,rssi FROM sightings WHERE mac=? AND ts>=? ORDER BY ts", (mac, now - 86400)):
+        if cur and ts - cur["end"] <= 300:
+            cur["end"] = ts
+            cur["n"] += 1
+            cur["sum"] += rssi
+            cur["peak"] = max(cur["peak"], rssi)
+        else:
+            if cur:
+                sessions.append(cur)
+            cur = {"start": ts, "end": ts, "n": 1, "sum": rssi, "peak": rssi}
+    if cur:
+        sessions.append(cur)
+    out = {"address": addr,
+           "sessions": [{"start": x["start"], "end": x["end"], "sightings": x["n"],
+                         "avg_rssi": round(x["sum"] / x["n"]), "peak_rssi": x["peak"]}
+                        for x in sessions[-12:][::-1]]}
+    off = time.localtime().tm_gmtoff
+    days = {(ts + off) // 86400 for (ts,) in db.execute(
+        "SELECT ts FROM sightings WHERE mac=? AND ts>=? GROUP BY ts/600", (mac, now - 14 * 86400))}
+    today = (now + off) // 86400
+    out["days_seen"] = [today - d for d in sorted(days, reverse=True) if today - d < 14]
+    # Seen together: other devices that share its 5-minute windows, ranked by overlap (Jaccard).
+    ref = "device:" + mac
+    mine = db.execute("SELECT COUNT(*) FROM presence WHERE ref=?", (ref,)).fetchone()[0]
+    together = []
+    if mine:
+        cand = db.execute(
+            "SELECT p2.ref, COUNT(*) FROM presence p1 JOIN presence p2 ON p2.bucket=p1.bucket AND p2.ref!=p1.ref "
+            "WHERE p1.ref=? GROUP BY p2.ref HAVING COUNT(*)>=2 ORDER BY COUNT(*) DESC LIMIT 40", (ref,)).fetchall()
+        for r, n in cand:
+            theirs = db.execute("SELECT COUNT(*) FROM presence WHERE ref=?", (r,)).fetchone()[0]
+            together.append((n / float(mine + theirs - n), r, n, theirs))
+        together.sort(reverse=True)
+    rows = []
+    for score, r, n, theirs in together[:8]:
+        item = {"ref": r, "together": n, "of_theirs": theirs, "of_mine": mine}
+        if r.startswith("device:"):
+            d = db.execute("SELECT mac,phy,manuf,name,label,known,rand FROM devices WHERE mac=?", (r[7:],)).fetchone()
+            if d:
+                item.update(mac=d["mac"], title=d["label"] or d["name"] or d["manuf"] or d["mac"],
+                            known=bool(d["known"]), rand=bool(d["rand"]), phy=d["phy"])
+        else:
+            item["title"] = r
+        rows.append(item)
+    out["seen_with"] = rows
+    return out
+
+
+def _pick(d, *path):
+    for k in path:
+        if not isinstance(d, dict) or k not in d:
+            return None
+        d = d[k]
+    return d
+
+
+@app.get("/api/device/<mac>/live")
+def api_device_live(mac):
+    """The raw record Kismet holds right now, plus a few commonly useful fields pulled out of it."""
+    mac = mac.lower()
+    if not MAC_RE.match(mac):
+        return jsonify({"error": "bad mac"}), 400
+    try:
+        data = watcher.kismet_get(cfg(), "/devices/by-mac/%s/devices.json" % mac)
+    except Exception as exc:
+        return jsonify({"error": "Kismet did not answer: %s" % exc}), 502
+    rec = data[0] if isinstance(data, list) and data else data if isinstance(data, dict) else None
+    if not rec:
+        return jsonify({"error": "Kismet has no record of this address"}), 404
+    b, dot = "kismet.device.base.", rec.get("dot11.device") or {}
+    adv = _pick(dot, "dot11.device.last_beaconed_ssid_record") or {}
+    summary = {
+        "Kismet type": rec.get(b + "type"), "Common name": rec.get(b + "commonname"),
+        "Channel": rec.get(b + "channel"), "Frequency (kHz)": rec.get(b + "frequency"),
+        "Packets": _pick(rec, b + "packets.total"), "Data bytes": rec.get(b + "datasize"),
+        "Advertised SSID": adv.get("dot11.advertisedssid.ssid") if isinstance(adv, dict) else None,
+        "Encryption": adv.get("dot11.advertisedssid.crypt_string") if isinstance(adv, dict) else None,
+        "Clients associated": len(dot["dot11.device.associated_client_map"])
+        if isinstance(dot.get("dot11.device.associated_client_map"), dict) else None,
+        "Last BSSID": dot.get("dot11.device.last_bssid"),
+        "Probed names": len(dot["dot11.device.probed_ssid_map"])
+        if isinstance(dot.get("dot11.device.probed_ssid_map"), (dict, list)) else None,
+        "First seen (Kismet)": rec.get(b + "first_time"), "Last seen (Kismet)": rec.get(b + "last_time"),
+    }
+    summary = {k: v for k, v in summary.items() if v not in (None, "", 0)}
+    raw = json.dumps(rec, indent=1, default=str)
+    return jsonify({"summary": summary, "raw": raw[:200000], "truncated": len(raw) > 200000})
 
 
 @app.get("/api/history/<mac>")

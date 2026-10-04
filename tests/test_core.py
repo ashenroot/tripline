@@ -63,6 +63,13 @@ class Ingest(unittest.TestCase):
         watcher.ingest(self.db, rec("aa:bb:cc:09:00:01"), 1000, self.HOME)
         self.assertEqual(self.state("aa:bb:cc:09:00:01")[1], 1)
 
+    def test_sibling_with_virtual_ap_first_byte(self):
+        # UniFi virtual APs also change the low bits of the first byte: 74 and 7a are the same AP
+        watcher.ingest(self.db, rec("da:11:22:33:44:55", "AE:BB:CC:07:00:01"), 1000, self.HOME)
+        self.assertEqual(self.state("da:11:22:33:44:55"), (0, 1))
+        watcher.ingest(self.db, rec("da:11:22:33:44:56", "5E:BB:CC:07:00:01"), 1000, self.HOME)
+        self.assertEqual(self.state("da:11:22:33:44:56")[1], 0)
+
     def test_other_ap_with_same_prefix_stays_unknown(self):
         watcher.ingest(self.db, rec("00:10:20:30:40:50", "aa:bb:cc:07:00:02"), 1000, self.HOME)
         self.assertEqual(self.state("00:10:20:30:40:50"), (0, 0))
