@@ -191,6 +191,15 @@ td input{width:150px}
 </section>
 
 <section id="view-dev" class="card hidden">
+  <h2>My networks</h2>
+  <p class="dim" style="margin:0 0 8px">Access points and hotspots that are yours. The device is marked known, and any Wi-Fi client connected to it is marked known automatically and never counted as a rotating address. Add every BSSID your equipment broadcasts (one per SSID and band on many routers).</p>
+  <div class="tablewrap"><table><tbody id="net-body"></tbody></table></div>
+  <div class="row" style="margin:10px 0 18px">
+    <input type="text" id="net-bssid" placeholder="BSSID aa:bb:cc:dd:ee:ff" aria-label="BSSID" size="20" maxlength="17">
+    <input type="text" id="net-label" placeholder="Name (optional)" aria-label="Network name" maxlength="40">
+    <button class="btn primary" id="net-add">Add network</button>
+    <span class="dim" id="net-msg"></span>
+  </div>
   <h2>Devices</h2>
   <div class="row">
     <select id="dev-filter" aria-label="Filter">
@@ -249,7 +258,7 @@ function setTab(t) {
   $('#tab-dash').setAttribute('aria-selected', t === 'dash');
   $('#tab-dev').setAttribute('aria-selected', t === 'dev');
   if (t === 'dash') { resizeRadar(); resizeTl(); if (lastAct) drawActivity(lastAct); }
-  if (t === 'dev') loadDevices();
+  if (t === 'dev') { loadNetworks(); loadDevices(); }
 }
 $('#tab-dash').onclick = () => setTab('dash');
 $('#tab-dev').onclick = () => setTab('dev');
@@ -762,6 +771,38 @@ act.addEventListener('pointermove', e => {
 act.addEventListener('pointerleave', () => { tip2.style.display = 'none'; });
 new ResizeObserver(() => { if (lastAct && tab === 'dash') drawActivity(lastAct); }).observe(act);
 
+/* ---------- my networks ---------- */
+async function loadNetworks() {
+  let d;
+  try { d = await api('/api/networks'); } catch (e) { return; }
+  const body = $('#net-body'); body.replaceChildren();
+  const now = Date.now() / 1000;
+  for (const n of d.networks) {
+    const tr = el('tr');
+    const c1 = el('td'); c1.appendChild(el('div', null, n.label || n.manuf || 'Network')); c1.appendChild(el('div', 'mono dim', n.bssid));
+    tr.appendChild(c1);
+    tr.appendChild(el('td', 'dim', n.last_seen ? 'beacon seen ' + rel(now - n.last_seen) + ' ago' : 'not seen yet'));
+    const c3 = el('td'); const b = el('button', 'btn danger', 'Remove');
+    b.onclick = async () => { await post('/api/networks/delete', { bssid: n.bssid }); loadNetworks(); };
+    c3.appendChild(b); tr.appendChild(c3); body.appendChild(tr);
+  }
+  for (const m of d.from_config) {
+    const tr = el('tr'); const c1 = el('td'); c1.appendChild(el('div', 'mono dim', m)); tr.appendChild(c1);
+    const c2 = el('td', 'dim', 'set in config.ini'); c2.colSpan = 2; tr.appendChild(c2); body.appendChild(tr);
+  }
+  if (!d.networks.length && !d.from_config.length) {
+    const tr = el('tr'); const td = el('td', 'dim', 'None yet.'); td.colSpan = 3; tr.appendChild(td); body.appendChild(tr);
+  }
+}
+$('#net-add').onclick = async () => {
+  const msg = $('#net-msg'); msg.textContent = '';
+  try {
+    await post('/api/networks', { bssid: $('#net-bssid').value, label: $('#net-label').value });
+    $('#net-bssid').value = ''; $('#net-label').value = '';
+    loadNetworks(); loadDevices();
+  } catch (e) { msg.textContent = 'Not a valid BSSID.'; }
+};
+
 /* ---------- devices tab ---------- */
 let devTimer = null;
 async function loadDevices() {
@@ -787,7 +828,14 @@ async function loadDevices() {
       if (x.known) await post('/api/known/delete', { mac: x.mac }); else await post('/api/known', { mac: x.mac, label: inp.value });
       loadDevices();
     };
-    c7.appendChild(b); tr.appendChild(c7);
+    c7.appendChild(b);
+    if (!x.rand && /802\.11/.test(x.phy || '')) {
+      const nb = el('button', 'btn', 'My network'); nb.title = 'Treat this device as one of my access points';
+      nb.style.marginLeft = '6px';
+      nb.onclick = async () => { await post('/api/networks', { bssid: x.mac, label: inp.value }); loadNetworks(); loadDevices(); };
+      c7.appendChild(nb);
+    }
+    tr.appendChild(c7);
     body.appendChild(tr);
   }
   if (!d.devices.length) { const tr = el('tr'); const td = el('td', 'dim', 'No devices match.'); td.colSpan = 7; tr.appendChild(td); body.appendChild(tr); }

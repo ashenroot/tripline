@@ -83,6 +83,37 @@ class Api(WebBase):
         self.assertEqual(self.row("aa:bb:cc:dd:ee:01"), (1, None, None))
 
 
+class Networks(WebBase):
+    def test_add_marks_beacon_known_and_lists(self):
+        r = self.client.post("/api/networks", json={"bssid": "AA-BB-CC-DD-EE-01", "label": "Router 5G"}, headers=H)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.row("aa:bb:cc:dd:ee:01"), (1, "Router 5G", None))
+        n = self.client.get("/api/networks").get_json()["networks"]
+        self.assertEqual([(x["bssid"], x["label"]) for x in n], [("aa:bb:cc:dd:ee:01", "Router 5G")])
+
+    def test_bad_bssid_rejected(self):
+        self.assertEqual(self.client.post("/api/networks", json={"bssid": "nope"}, headers=H).status_code, 400)
+
+    def test_existing_unknown_device_gets_known(self):
+        self.add("aa:bb:cc:dd:ee:01", src="unmarked")
+        self.client.post("/api/networks", json={"bssid": "aa:bb:cc:dd:ee:01"}, headers=H)
+        self.assertEqual(self.row("aa:bb:cc:dd:ee:01")[0::2], (1, None))
+
+    def test_remove_keeps_device_known(self):
+        self.client.post("/api/networks", json={"bssid": "aa:bb:cc:dd:ee:01"}, headers=H)
+        self.client.post("/api/networks/delete", json={"bssid": "aa:bb:cc:dd:ee:01"}, headers=H)
+        self.assertEqual(self.client.get("/api/networks").get_json()["networks"], [])
+        self.assertEqual(self.row("aa:bb:cc:dd:ee:01")[0], 1)
+
+    def test_watcher_uses_ui_added_network_for_clients(self):
+        self.client.post("/api/networks", json={"bssid": "aa:bb:cc:00:00:01"}, headers=H)
+        home = watcher.home_set(self.cfg, self.db)
+        self.assertIn("aa:bb:cc:00:00:01", home)
+        from tests.helpers import rec
+        watcher.ingest(self.db, rec("da:11:22:33:44:55", "AA:BB:CC:00:00:01"), 1000, home)
+        self.assertEqual(self.row("da:11:22:33:44:55")[0], 1)
+
+
 class Auth(WebBase):
     password = "s3cret"
 

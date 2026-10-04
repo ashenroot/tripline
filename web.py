@@ -328,6 +328,46 @@ def api_known_bulk():
     return jsonify({"ok": True, "count": len(macs)})
 
 
+@app.get("/api/networks")
+def api_networks():
+    db = get_db()
+    rows = db.execute("SELECT n.bssid, n.label, n.added, d.last_seen, d.manuf FROM networks n "
+                      "LEFT JOIN devices d ON d.mac = n.bssid ORDER BY n.added DESC").fetchall()
+    cfg_list = sorted(m.strip().lower() for m in cfg().get("detect", "home_bssids", fallback="").split(",")
+                      if m.strip())
+    return jsonify({"networks": [dict(r) for r in rows], "from_config": cfg_list})
+
+
+@app.post("/api/networks")
+def api_networks_add():
+    b = body()
+    bssid = str(b.get("bssid", "")).strip().lower().replace("-", ":")
+    label = (str(b.get("label", "")).strip()[:40]) or None
+    if not MAC_RE.match(bssid):
+        return jsonify({"error": "bad bssid"}), 400
+    now = int(time.time())
+    db = get_db()
+    db.execute("INSERT INTO networks(bssid,label,added) VALUES(?,?,?) "
+               "ON CONFLICT(bssid) DO UPDATE SET label=COALESCE(excluded.label, label)", (bssid, label, now))
+    # The beaconing device itself is yours too.
+    db.execute("INSERT INTO devices(mac,phy,rand,first_seen,last_seen,max_rssi,known,label) "
+               "VALUES(?,?,0,?,?,0,1,?) ON CONFLICT(mac) DO UPDATE SET known=1, src=NULL, "
+               "label=COALESCE(label, ?)", (bssid, "IEEE802.11", now, now, label, label))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/networks/delete")
+def api_networks_del():
+    bssid = str(body().get("bssid", "")).strip().lower()
+    if not MAC_RE.match(bssid):
+        return jsonify({"error": "bad bssid"}), 400
+    db = get_db()
+    db.execute("DELETE FROM networks WHERE bssid=?", (bssid,))
+    db.commit()
+    return jsonify({"ok": True})
+
+
 def main():
     c = cfg()
     bind = c.get("web", "bind", fallback="127.0.0.1")

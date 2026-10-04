@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS counts (ts INTEGER, n INTEGER);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS alerts (
     ts INTEGER, title TEXT, message TEXT, priority TEXT);
+CREATE TABLE IF NOT EXISTS networks (
+    bssid TEXT PRIMARY KEY, label TEXT, added INTEGER);
 """
 
 
@@ -86,6 +88,13 @@ def meta_set(db, key, value):
     db.execute("INSERT INTO meta(k,v) VALUES(?,?) "
                "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (key, str(value)))
     db.commit()
+
+
+def home_set(cfg, db):
+    """BSSIDs of your own networks: [detect] home_bssids plus those added in the web UI."""
+    out = {m.strip().lower() for m in cfg.get("detect", "home_bssids", fallback="").split(",") if m.strip()}
+    out.update(r[0] for r in db.execute("SELECT bssid FROM networks"))
+    return frozenset(out)
 
 
 def fmt_ts(ts):
@@ -216,8 +225,6 @@ def run(cfg, db, once=False):
     gap = cfg.getint("detect", "gap_seconds")
     cooldown = cfg.getint("detect", "alert_cooldown_minutes") * 60
     confirm = cfg.getint("detect", "burst_confirm_seconds")
-    home = frozenset(m.strip().lower()
-                     for m in cfg.get("detect", "home_bssids", fallback="").split(",") if m.strip())
 
     if meta_get(db, "mode") is None:
         meta_set(db, "mode", "learning")
@@ -253,6 +260,7 @@ def run(cfg, db, once=False):
             continue
         last_poll = now
 
+        home = home_set(cfg, db)  # re-read each poll so UI changes apply without a restart
         for d in devices:
             row = ingest(db, d, now, home)
             if row is None or mode == "learning" or quiet:

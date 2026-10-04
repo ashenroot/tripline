@@ -30,7 +30,7 @@ Reports and fixes from real hardware are the most useful contribution right now.
   distinct strong rotating addresses in a sliding window. In `home` mode it alerts above the
   learned household peak plus a margin; in `away` mode, above the away margin.
 - **Your own network** is excluded from the noise. Clients associated with your access
-  points (`home_bssids`) and devices from a known-device source (UniFi, a text file, or your
+  points (`home_bssids` in the config, or the My networks box in the Devices tab) and devices from a known-device source (UniFi, a text file, or your
   own plugin) are marked known automatically. Hand edits in the UI always win.
 - **Modes:** `learning` (log only), `home`, `away`, plus a timed guest window that
   suppresses alerts.
