@@ -1,8 +1,10 @@
-# WUDS2
+# Tripline
 
 Passive wireless presence detection for one building, on a single Raspberry Pi.
-Kismet captures Wi-Fi and Bluetooth; WUDS2 logs sightings to SQLite, alerts when an
+Kismet captures Wi-Fi and Bluetooth; Tripline logs sightings to SQLite, alerts when an
 unknown device stays above a signal-strength floor, and serves a web dashboard.
+
+Inspired by the old WUDS project (wireless MAC-based intruder alerts), rebuilt for a world of randomized addresses.
 
 It detects "something new is nearby." It does not identify people.
 
@@ -44,22 +46,22 @@ Reports and fixes from real hardware are the most useful contribution right now.
    `httpd_password`.
 3. **Data sources.** `sudo cp examples/kismet_site.conf /etc/kismet/` and set your Wi-Fi
    interface name (`iw dev`).
-4. **WUDS2.**
+4. **Tripline.**
    ```
-   sudo mkdir -p /opt/wuds/sources /etc/wuds /var/lib/wuds
-   sudo chown $USER /var/lib/wuds
+   sudo mkdir -p /opt/tripline/sources /etc/tripline /var/lib/tripline
+   sudo chown $USER /var/lib/tripline
    sudo apt install python3-flask
-   sudo cp watcher.py web.py known_sync.py dashboard.html /opt/wuds/
-   sudo cp sources/*.py /opt/wuds/sources/
-   sudo cp config.example.ini /etc/wuds/config.ini
-   sudo chmod 600 /etc/wuds/config.ini
-   sudo nano /etc/wuds/config.ini
+   sudo cp watcher.py web.py known_sync.py dashboard.html /opt/tripline/
+   sudo cp sources/*.py /opt/tripline/sources/
+   sudo cp config.example.ini /etc/tripline/config.ini
+   sudo chmod 600 /etc/tripline/config.ini
+   sudo nano /etc/tripline/config.ini
    ```
 5. **Services.** Copy `systemd/*.service` to `/etc/systemd/system/`, change `User=`, then
-   `sudo systemctl enable --now kismet wuds-watcher wuds-web` (add `wuds-sync` if you use a
+   `sudo systemctl enable --now kismet tripline-watcher tripline-web` (add `tripline-sync` if you use a
    known-device source).
 6. **Learn, then arm.** Leave it in `learning` mode for 1-2 weeks, then press Arm in the UI
-   or run `python3 /opt/wuds/watcher.py arm`.
+   or run `python3 /opt/tripline/watcher.py arm`.
 
 `config.ini` holds secrets and is git-ignored. Never commit it.
 
@@ -97,7 +99,7 @@ header (CSRF guard), and device strings are rendered as text only.
 
 ## CLI
 
-`python3 watcher.py <command>` with `WUDS_CONFIG` set: `status`, `report [--hours N]`,
+`python3 watcher.py <command>` with `TRIPLINE_CONFIG` set: `status`, `report [--hours N]`,
 `arm`, `home`, `away`, `guest HOURS|off`, `known add|del|list`.
 
 ## Tests

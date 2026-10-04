@@ -1,0 +1,13 @@
+[Unit]
+Description=Tripline web UI
+After=tripline-watcher.service
+
+[Service]
+User=youruser
+Environment=TRIPLINE_CONFIG=/etc/tripline/config.ini
+WorkingDirectory=/opt/tripline
+ExecStart=/usr/bin/python3 /opt/tripline/web.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

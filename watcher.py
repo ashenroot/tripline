@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WUDS2 watcher.
+"""Tripline watcher.
 
 Polls the local Kismet REST API, logs sightings to SQLite, and sends ntfy alerts
 for unknown devices near the house.
@@ -23,7 +23,7 @@ import time
 import urllib.parse
 import urllib.request
 
-CFG_PATH = os.environ.get("WUDS_CONFIG", "/etc/wuds/config.ini")
+CFG_PATH = os.environ.get("TRIPLINE_CONFIG", "/etc/tripline/config.ini")
 
 FIELDS = [
     "kismet.device.base.macaddr",
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 def load_cfg():
     cp = configparser.ConfigParser()
     if not cp.read(CFG_PATH):
-        sys.exit(f"Config not found: {CFG_PATH} (set WUDS_CONFIG or create it)")
+        sys.exit(f"Config not found: {CFG_PATH} (set TRIPLINE_CONFIG or create it)")
     return cp
 
 
@@ -244,7 +244,7 @@ def run(cfg, db, once=False):
             log(f"Kismet poll failed: {exc}")
             kismet_fail_since = kismet_fail_since or now
             if now - kismet_fail_since > 600 and now - alerted.get("down", 0) > 3600:
-                notify(cfg, db, "WUDS sensor down", "Kismet unreachable for 10+ minutes",
+                notify(cfg, db, "Tripline sensor down", "Kismet unreachable for 10+ minutes",
                        "high", "warning")
                 alerted["down"] = now
             if once:

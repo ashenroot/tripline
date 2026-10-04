@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WUDS2 web UI: live dashboard plus device management.
+"""Tripline web UI: live dashboard plus device management.
 
 Reads and writes the same SQLite database as watcher.py. Binds to localhost by
 default. To expose it on a LAN interface, set [web] bind and [web] password in
@@ -53,9 +53,9 @@ def guard():
               and hmac.compare_digest((a.password or "").encode(), pw.encode()))
         if not ok:
             return Response("Authentication required", 401,
-                            {"WWW-Authenticate": 'Basic realm="WUDS2"'})
+                            {"WWW-Authenticate": 'Basic realm="Tripline"'})
     # Custom header forces a CORS preflight for cross-site requests, which we never allow.
-    if request.method == "POST" and request.headers.get("X-Requested-With") != "wuds":
+    if request.method == "POST" and request.headers.get("X-Requested-With") != "tripline":
         return Response("Forbidden", 403)
 
 

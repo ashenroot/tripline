@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WUDS2</title>
+<title>Tripline</title>
 <style>
 :root{
   --bg:#070b10; --panel:#0d141c; --panel2:#101a25; --line:#1b2a3a; --text:#d6e2ee; --dim:#7d92a8;
@@ -99,7 +99,7 @@ td input{width:150px}
 </head>
 <body>
 <header>
-  <span class="logo">WUDS2</span>
+  <span class="logo">Tripline</span>
   <span class="pill"><span class="dot" id="d-sensor"></span><span id="t-sensor">connecting</span></span>
   <span class="pill" id="p-guest" hidden></span>
   <span class="spacer"></span>
@@ -234,7 +234,7 @@ async function api(path, opts) {
 }
 const post = (path, data) => api(path, {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'wuds' },
+  headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'tripline' },
   body: JSON.stringify(data || {})
 });
 
@@ -537,12 +537,12 @@ tl.addEventListener('pointerdown', e => {
 
 // Known and rotating devices are hidden by default so only unknown static devices show.
 let show = { known: false, rand: false };
-try { Object.assign(show, JSON.parse(localStorage.getItem('wuds.show') || '{}')); } catch (e) { /* storage unavailable */ }
+try { Object.assign(show, JSON.parse(localStorage.getItem('tripline.show') || '{}')); } catch (e) { /* storage unavailable */ }
 const visible = d => !(d.rand && !show.rand) && !(d.known && !show.known);
 function syncFilters() {
   $('#chip-known').setAttribute('aria-pressed', show.known);
   $('#chip-rand').setAttribute('aria-pressed', show.rand);
-  try { localStorage.setItem('wuds.show', JSON.stringify(show)); } catch (e) { /* ignore */ }
+  try { localStorage.setItem('tripline.show', JSON.stringify(show)); } catch (e) { /* ignore */ }
 }
 $('#chip-known').onclick = () => { show.known = !show.known; syncFilters(); };
 $('#chip-rand').onclick = () => { show.rand = !show.rand; syncFilters(); };

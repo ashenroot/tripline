@@ -8,7 +8,7 @@ import web
 import watcher
 from tests.helpers import ROOT, make_cfg, tmpdir
 
-H = {"X-Requested-With": "wuds"}
+H = {"X-Requested-With": "tripline"}
 
 
 class WebBase(unittest.TestCase):

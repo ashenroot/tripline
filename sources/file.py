@@ -1,7 +1,7 @@
 """Plain-text known-device list: one device per line, `MAC [label]`. `#` starts a comment.
 
     [source.file]
-    path = /etc/wuds/known_devices.txt
+    path = /etc/tripline/known_devices.txt
 """
 from . import clean_label, norm_mac
 
