@@ -516,6 +516,22 @@ class Insight(unittest.TestCase):
         got = insight.interesting(rec).get("Bluetooth", [])
         self.assertEqual({k for k, _ in got}, {"btle.device.address_type", "btle.device.service_uuid_vec"})
 
+    def test_bluetooth_facts_and_adv_parsing(self):
+        import insight
+        # flags record, then manufacturer data: Apple (0x004c), Nearby info (0x10); then a complete name
+        adv = bytes([2, 1, 6, 5, 0xFF, 0x4C, 0x00, 0x10, 0x05, 6, 9]) + b"Watch"
+        f = insight.bt_facts(7, "Wristwatch", -8, "BLE", ["0000180f-0000-1000-8000-00805f9b34fb"], list(adv))
+        self.assertEqual(f["class"], "wearable")
+        self.assertEqual(f["services"], ["Battery"])
+        self.assertEqual(f["company"], "Apple")
+        self.assertIn("Nearby info", f["apple_message"])
+        self.assertEqual(f["adv_name"], "Watch")
+        self.assertEqual(insight.parse_adv(adv.hex())["company_id"], 0x004C)
+        self.assertIsNone(insight.parse_adv("zz"))
+        self.assertEqual(insight.bt_facts(0, 0, 0, None, None, None), {})
+        self.assertIn("static random", insight.address_kind("c1:00:00:00:00:00", False))
+        self.assertIn("resolvable private", insight.address_kind("5a:00:00:00:00:00", False))
+
     def test_trend_and_distance(self):
         import insight
         up = [[i * 20, -80 + i * 2] for i in range(10)]

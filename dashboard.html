@@ -1182,6 +1182,14 @@ async function openDevice(mac) {
   row('Address type', (ad.locally_administered ? 'locally administered (private or random address)' : 'globally unique (assigned to the vendor)')
     + (ad.multicast ? ', multicast' : ''));
   row('Vendor prefix', ad.oui);
+  if (d.address_kind) row('Bluetooth address', d.address_kind);
+  const bt = (d.extra && d.extra.bt) || {};
+  if (bt.class) row('Device class', bt.class + (bt.subclass ? ' (' + bt.subclass + ')' : ''));
+  if (bt.type) row('Bluetooth type', bt.type);
+  if (bt.company) row('Manufacturer data', bt.company + (bt.apple_message ? ': ' + bt.apple_message : ''));
+  if (bt.adv_name) row('Advertised name', bt.adv_name);
+  if (bt.services && bt.services.length) row('Services', bt.services.join(', '));
+  if (bt.tx_dbm !== undefined) row('Transmit power', bt.tx_dbm + ' dBm');
   if (d.distance) row('Rough range now', d.distance + ' (very rough, walls and antennas change it)');
   row('Signal trend', d.trend.label + (d.trend.slope !== null ? ' (' + (d.trend.slope > 0 ? '+' : '') + d.trend.slope + ' dB/min)' : ''));
   const ex = d.extra || {};

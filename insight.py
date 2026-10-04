@@ -18,6 +18,12 @@ EXTRA_FIELDS = [
     ["dot11.device/dot11.device.advertised_ssid_map", "ap_ssids"],
     ["dot11.device/dot11.device.associated_client_map", "clients"],
     ["dot11.device/dot11.device.bss_timestamp", "bss_ts"],
+    ["bluetooth.device/bluetooth.device.major_class", "bt_major"],
+    ["bluetooth.device/bluetooth.device.minor_class", "bt_minor"],
+    ["bluetooth.device/bluetooth.device.txpower", "bt_tx"],
+    ["bluetooth.device/bluetooth.device.type", "bt_type"],
+    ["bluetooth.device/bluetooth.device.service_uuid_vec", "bt_uuids"],
+    ["bluetooth.device/bluetooth.device.scan_data_bytes", "bt_adv"],
 ]
 
 _SSID_KEYS = {"ssid": "dot11.advertisedssid.ssid", "crypt": "dot11.advertisedssid.crypt_string",
@@ -53,10 +59,116 @@ def harvest(d):
     cl = d.get("clients")
     if isinstance(cl, dict) and cl:
         out["clients"] = sorted(str(m).lower() for m in cl)[:80]
+    bt = bt_facts(d.get("bt_major"), d.get("bt_minor"), d.get("bt_tx"), d.get("bt_type"),
+                  d.get("bt_uuids"), d.get("bt_adv"))
+    if bt:
+        out["bt"] = bt
     ts = d.get("bss_ts")
     if isinstance(ts, (int, float)) and ts > 0:
         out["uptime_s"] = int(ts / 1e6)
     return out
+
+
+# ---------------------------------------------------------------- Bluetooth
+
+MAJOR_CLASS = {1: "computer", 2: "phone", 3: "network access point", 4: "audio or video", 5: "peripheral",
+               6: "imaging", 7: "wearable", 8: "toy", 9: "health device", 31: "uncategorized"}
+SERVICES = {"1800": "Generic Access", "1801": "Generic Attribute", "1802": "Immediate Alert", "1803": "Link Loss",
+            "1804": "TX Power", "1805": "Current Time", "1809": "Health Thermometer", "180a": "Device Information",
+            "180d": "Heart Rate", "180f": "Battery", "1810": "Blood Pressure", "1812": "Human Interface (keyboard, mouse)",
+            "1814": "Running Speed", "1816": "Cycling Speed", "1818": "Cycling Power", "181a": "Environmental Sensing",
+            "181c": "User Data", "181d": "Weight Scale", "1822": "Pulse Oximeter", "fd6f": "Exposure Notification",
+            "feaa": "Eddystone beacon", "fe9f": "Google", "fe2c": "Google Fast Pair", "fd5a": "Samsung SmartTag",
+            "feec": "Tile tracker", "feed": "Tile tracker", "fe07": "Sonos", "fe03": "Amazon"}
+COMPANIES = {0x004C: "Apple", 0x0006: "Microsoft", 0x0075: "Samsung", 0x00E0: "Google", 0x0087: "Garmin",
+             0x0059: "Nordic Semiconductor", 0x0171: "Amazon", 0x012D: "Sony", 0x009E: "Bose", 0x038F: "Xiaomi"}
+APPLE_TYPES = {0x02: "iBeacon", 0x05: "AirDrop", 0x07: "AirPods or Beats pairing", 0x09: "AirPlay target",
+               0x0A: "AirPlay source", 0x0C: "Handoff", 0x0D: "Tethering target", 0x0E: "Tethering source",
+               0x0F: "Nearby action", 0x10: "Nearby info (iPhone, iPad, Mac or Watch)", 0x12: "Find My (AirTag or accessory)"}
+
+
+def _to_bytes(v):
+    """Raw advertisement bytes from a list of ints, a hex string or base64, whichever Kismet sent."""
+    import base64
+    import binascii
+    try:
+        if isinstance(v, list) and v and all(isinstance(x, int) and 0 <= x < 256 for x in v):
+            return bytes(v)
+        if isinstance(v, str) and v:
+            t = v.replace(":", "").replace(" ", "")
+            if len(t) % 2 == 0 and all(c in "0123456789abcdefABCDEF" for c in t):
+                return bytes.fromhex(t)
+            return base64.b64decode(v, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    return None
+
+
+def parse_adv(raw):
+    """Walk the advertisement's length/type/value records; None if the bytes do not parse."""
+    b = _to_bytes(raw)
+    if not b:
+        return None
+    out, i = {}, 0
+    while i < len(b):
+        n = b[i]
+        if n == 0:
+            break
+        if i + 1 + n > len(b):
+            return out or None
+        t, val = b[i + 1], b[i + 2:i + 1 + n]
+        if t in (0x08, 0x09):
+            out["name"] = val.decode("utf-8", "replace")[:40]
+        elif t == 0xFF and len(val) >= 2:
+            cid = val[0] | (val[1] << 8)
+            out["company_id"] = cid
+            if cid == 0x004C and len(val) >= 3:
+                out["apple_type"] = val[2]
+        i += 1 + n
+    return out or None
+
+
+def bt_facts(major, minor, tx, btype, uuids, adv):
+    """The Bluetooth identity facts worth keeping, from Kismet's bluetooth.device fields."""
+    out = {}
+    if isinstance(major, int) and major:
+        out["class"] = MAJOR_CLASS.get(major, "class %d" % major)
+    elif isinstance(major, str) and major and major.lower() not in ("0", "unknown", "miscellaneous"):
+        out["class"] = major
+    if isinstance(minor, str) and minor and minor.lower() not in ("0", "unknown"):
+        out["subclass"] = minor
+    if isinstance(tx, (int, float)) and tx not in (0, -127, 127):
+        out["tx_dbm"] = tx
+    if isinstance(btype, str) and btype:
+        out["type"] = btype
+    if isinstance(uuids, list) and uuids:
+        names = []
+        for u in uuids[:12]:
+            u = str(u).lower()
+            short = u[4:8] if len(u) == 36 and u.endswith("-0000-1000-8000-00805f9b34fb") else u[-4:] if len(u) <= 4 else u
+            names.append(SERVICES.get(short, u))
+        out["services"] = names
+    a = parse_adv(adv)
+    if a:
+        if "name" in a:
+            out["adv_name"] = a["name"]
+        if "company_id" in a:
+            out["company"] = COMPANIES.get(a["company_id"], "company id 0x%04x" % a["company_id"])
+        if "apple_type" in a:
+            out["apple_message"] = APPLE_TYPES.get(a["apple_type"], "type 0x%02x" % a["apple_type"])
+    return out
+
+
+def address_kind(mac, vendor_known):
+    """Bluetooth address class from the top two bits (Core spec): only meaningful for random addresses."""
+    try:
+        top = int(mac.split(":")[0], 16) >> 6
+    except ValueError:
+        return None
+    if vendor_known:
+        return "public (assigned to a vendor)"
+    return {3: "static random (stable until the device restarts)", 1: "resolvable private (rotates, typical of phones and wearables)",
+            0: "non-resolvable private (rotates)", 2: "reserved or public with an unknown vendor"}[top]
 
 
 def merge_extra(old, new):
@@ -188,7 +300,8 @@ GROUPS = [
     ("Traffic", ("packets.total", "packets.data", "packets.error", "packets.llc", "datasize", "num_retries",
                  "num_fragments")),
     ("Bluetooth", ("uuid", "address_type", "addr_type", "txpower", "tx_power", "company", "manufacturer",
-                   "device_class", "appearance", "service_data", "connectable", "bt_device", "bdaddr")),
+                   "device_class", "major_class", "minor_class", "pathloss", "bluetooth.device.type",
+                   "scan_data", "appearance", "service_data", "connectable", "bdaddr")),
 ]
 
 

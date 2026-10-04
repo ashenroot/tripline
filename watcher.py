@@ -208,10 +208,17 @@ def is_random(phy, mac, manuf):
     """Heuristic: does this address rotate?
 
     Wi-Fi: locally-administered bit set in the first octet.
-    Bluetooth: no vendor (OUI) resolved. Verify against your Kismet output.
+    Bluetooth: no vendor (OUI) resolved and not a static random address (top two bits 11).
     """
     if is_bt(phy):
-        return 1 if (not manuf or manuf.lower() == "unknown") else 0
+        if manuf and manuf.lower() != "unknown":
+            return 0
+        # No vendor. Per the Bluetooth spec the top two bits tell random addresses apart: 11 is a static
+        # random address that stays put until the device restarts, so it is not treated as rotating.
+        try:
+            return 0 if int(mac.split(":")[0], 16) >> 6 == 3 else 1
+        except ValueError:
+            return 1
     try:
         return 1 if int(mac.split(":")[0], 16) & 0x02 else 0
     except ValueError:

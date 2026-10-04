@@ -25,6 +25,9 @@ class Helpers(unittest.TestCase):
         self.assertEqual(watcher.is_random("IEEE802.11", "00:11:22:33:44:55", ""), 0)
         self.assertEqual(watcher.is_random("Bluetooth", "5a:11:22:33:44:55", ""), 1)
         self.assertEqual(watcher.is_random("Bluetooth", "5a:11:22:33:44:55", "Apple"), 0)
+        # static random (top bits 11) stays put, so it is not rotating even without a vendor
+        self.assertEqual(watcher.is_random("Bluetooth", "ca:11:22:33:44:55", ""), 0)
+        self.assertEqual(watcher.is_random("Bluetooth", "1a:11:22:33:44:55", ""), 1)
 
 
 class Ingest(unittest.TestCase):

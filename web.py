@@ -325,6 +325,8 @@ def api_device(mac):
     out["ap"] = ap
     ex = insight.load_extra(d["extra"])
     out["extra"] = ex
+    if watcher.is_bt(d["phy"]):
+        out["address_kind"] = insight.address_kind(mac, bool(d["manuf"]) and d["manuf"].lower() != "unknown")
     if ex.get("clients"):
         names = {}
         for c in ex["clients"]:
