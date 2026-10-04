@@ -87,16 +87,20 @@ class Command(unittest.TestCase):
         t = tmpdir(); self.addCleanup(t.cleanup)
         return make_cfg(t.name, vehicles=kv)
 
-    def test_default_single_frequency(self):
-        self.assertEqual(tpms.command(self.cfgv()), "rtl_433 -d 0 -f 315M -F json -M level -M time:unix")
+    def test_default_watches_both_bands_and_hops_fast(self):
+        self.assertEqual(tpms.command(self.cfgv()),
+                         "rtl_433 -d 0 -f 315M -f 433.92M -H 10 -F json -M level -M time:unix")
 
-    def test_multiple_frequencies_hop(self):
-        c = tpms.command(self.cfgv(frequencies="315M, 433.92M"))
-        self.assertIn("-f 315M -f 433.92M -H 30", c)
+    def test_single_frequency_does_not_hop(self):
+        c = tpms.command(self.cfgv(frequencies="433.92M"))
+        self.assertEqual(c, "rtl_433 -d 0 -f 433.92M -F json -M level -M time:unix")
+
+    def test_hop_seconds_configurable(self):
+        self.assertIn("-H 5", tpms.command(self.cfgv(hop_seconds="5")))
 
     def test_custom_command_gets_substitutions(self):
         c = tpms.command(self.cfgv(command="myrtl -d {device} {freqs}", device="1"))
-        self.assertEqual(c, "myrtl -d 1 -f 315M")
+        self.assertEqual(c, "myrtl -d 1 -f 315M -f 433.92M -H 10")
 
     def test_shell_metacharacters_are_quoted(self):
         c = tpms.command(self.cfgv(device="0; rm -rf /"))

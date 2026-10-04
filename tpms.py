@@ -67,10 +67,12 @@ def record(cfg, db, msg, now, last_alert):
 
 def command(cfg):
     custom = cfg.get("vehicles", "command", fallback="").strip()
-    freqs = [f.strip() for f in cfg.get("vehicles", "frequencies", fallback="315M").split(",") if f.strip()]
+    freqs = [f.strip() for f in cfg.get("vehicles", "frequencies", fallback="315M, 433.92M").split(",") if f.strip()]
     fargs = " ".join(f"-f {shlex.quote(f)}" for f in freqs)
     if len(freqs) > 1:
-        fargs += " -H 30"  # hop between frequencies every 30 s
+        # rtl_433 defaults to hopping every 600 s, far too slow to catch a passing car.
+        hop = max(1, cfg.getint("vehicles", "hop_seconds", fallback=10))
+        fargs += f" -H {hop}"
     tmpl = custom or DEFAULT_CMD
     return tmpl.format(device=shlex.quote(cfg.get("vehicles", "device", fallback="0")), freqs=fargs)
 

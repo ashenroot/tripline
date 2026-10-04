@@ -14,7 +14,7 @@
 #   --ntfy-topic NAME|auto enable ntfy alerts ("auto" generates a long random topic)
 #   --bt-iface hciN        Bluetooth adapter (default: a USB adapter if present, else the built-in)
 #   --sdr / --no-sdr       force or skip RTL-SDR vehicle (TPMS) setup (default: if a dongle is found)
-#   --sdr-freq FREQ        TPMS frequency (default 315M for the US; Europe uses 433.92M)
+#   --sdr-freq LIST        TPMS frequencies, comma-separated (default 315M,433.92M: both bands)
 #   --no-kismet            skip the Kismet install and its config (use your own Kismet)
 #   --no-packages          skip apt entirely (you installed the dependencies yourself)
 #   --no-services          do not install or start systemd units
@@ -38,7 +38,7 @@ BT_SYSFS="${BT_SYSFS:-/sys/class/bluetooth}"
 SVC_USER="tripline"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-BT_IFACE="" SDR_MODE="auto" SDR_FREQ="315M"
+BT_IFACE="" SDR_MODE="auto" SDR_FREQ="315M,433.92M"
 WIFI_IFACE="" WEB_BIND="127.0.0.1" WEB_PORT="8080" NTFY_TOPIC=""
 DO_KISMET=1 DO_PACKAGES=1 DO_SERVICES=1 UNINSTALL=0 PURGE=0 YES=0
 
@@ -75,7 +75,7 @@ done
 [[ "$WEB_PORT" =~ ^[0-9]+$ ]] && [ "$WEB_PORT" -ge 1 ] && [ "$WEB_PORT" -le 65535 ] || die "bad --web-port"
 [[ "$WIFI_IFACE" =~ ^[A-Za-z0-9_.-]*$ ]] || die "bad --wifi-iface"
 [[ "$BT_IFACE" =~ ^[A-Za-z0-9_.-]*$ ]] || die "bad --bt-iface"
-[[ "$SDR_FREQ" =~ ^[0-9]+(\.[0-9]+)?[kKmMgG]?$ ]] || die "bad --sdr-freq (example: 315M)"
+[[ "$SDR_FREQ" =~ ^[0-9]+(\.[0-9]+)?[kKmMgG]?(,[0-9]+(\.[0-9]+)?[kKmMgG]?)*$ ]] || die "bad --sdr-freq (examples: 315M or 315M,433.92M)"
 [[ "$NTFY_TOPIC" =~ ^[A-Za-z0-9_-]*$ ]] || die "--ntfy-topic may contain only letters, digits, - and _"
 
 have_systemd() { [ "$DO_SERVICES" = 1 ] && command -v systemctl >/dev/null && [ -d /run/systemd/system ]; }
@@ -245,7 +245,7 @@ fi
 if [ "$SDR" = 1 ]; then
   if grep -q '^\[vehicles\]' "$CFG"; then
     setkey vehicles enabled true
-    setkey vehicles frequencies "$SDR_FREQ"
+    setkey vehicles frequencies "${SDR_FREQ//,/, }"
   else
     warn "$CFG has no [vehicles] section (older install). Copy it from config.example.ini to enable vehicle detection."
     SDR=0

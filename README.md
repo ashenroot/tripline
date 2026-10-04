@@ -59,7 +59,7 @@ services. Re-running it upgrades the code and keeps your config and database.
 | `--ntfy-topic auto` | Turn on ntfy alerts with a generated random topic |
 | `--bt-iface hci1` | Choose the Bluetooth adapter (default: a USB adapter if present, else the built-in) |
 | `--sdr` / `--no-sdr` | Force or skip vehicle detection (default: enabled when an RTL-SDR or Nooelec dongle is plugged in) |
-| `--sdr-freq 433.92M` | TPMS frequency (default `315M`, the US norm) |
+| `--sdr-freq LIST` | TPMS frequencies (default `315M,433.92M`: both bands) |
 | `--no-kismet` | Use your own Kismet install |
 | `--no-packages` | Skip apt (other distros: install Kismet and Flask yourself first) |
 | `--no-services` | Copy files only |
@@ -99,13 +99,13 @@ and leaving, and does not see parked ones.
 - The installer enables this when it finds a dongle, installs `rtl-433`, and blacklists the
   kernel TV-tuner driver that otherwise claims the device (a reboot or re-plug may be needed).
   Re-run `install.sh` after plugging a dongle in later.
-- `[vehicles] frequencies` takes several values and hops between them; `command` replaces
+- A sensor's band is not known in advance, so the default watches 315 MHz and 433.92 MHz. One dongle hops between them every `hop_seconds` (default 10), so each band is covered about half the time and a short drive past can be missed. Two dongles, one per band, give full coverage. `command` replaces
   the whole decoder command, and `tpms.py run --stdin` reads `rtl_433` JSON from a pipe.
 - Range is short. A road several hundred feet away is unlikely to register, which is the
   point; a sensor on your own driveway should.
 
 Unverified on real hardware: the `rtl_433` JSON fields (`type: TPMS`, `pressure_*`), the
-315 MHz default across your region's sensors, and the Bluetooth and USB detection in the
+behavior of dual-band hopping on a single dongle, and the Bluetooth and USB detection in the
 installer.
 
 ## Known-device sources
