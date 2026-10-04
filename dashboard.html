@@ -1090,9 +1090,9 @@ async function loadDevices() {
     tr.appendChild(el('td', 'mono', x.max_rssi ? x.max_rssi + ' dBm' : '-'));
     tr.appendChild(el('td', 'mono', String(x.seen_count)));
     const c6 = el('td'); const inp = el('input'); inp.type = 'text'; inp.maxLength = 40; inp.value = x.label || ''; inp.placeholder = 'label';
-    inp.disabled = !!x.rand; c6.appendChild(inp); tr.appendChild(c6);
-    const c7 = el('td'); const b = el('button', 'btn ' + (x.known ? 'danger' : 'primary'), x.rand ? 'rotating' : x.known ? 'Unmark' : 'Mark known');
-    b.disabled = !!x.rand;
+    c6.appendChild(inp); tr.appendChild(c6);
+    const c7 = el('td'); const b = el('button', 'btn ' + (x.known ? 'danger' : 'primary'), x.known ? 'Unmark' : 'Mark known');
+    if (x.rand) b.title = 'This address looks like it rotates, so marking it covers only the address you see now';
     b.onclick = () => doAct(b, async () => {
       if (x.known) await post('/api/known/delete', { mac: x.mac }); else await post('/api/known', { mac: x.mac, label: inp.value });
       await loadDevices();
