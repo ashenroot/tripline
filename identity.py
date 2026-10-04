@@ -4,7 +4,9 @@ Nothing here decides who someone is. It records weak evidence (probed network na
 sensors and devices that show up together), proposes links, and applies the ones you
 confirm. A link is always a manual action.
 """
+import json
 import math
+import re
 import time
 
 # SSIDs carried by huge numbers of devices. They say almost nothing about a specific owner.
@@ -26,6 +28,11 @@ MIN_COOCCUR_RATIO = 0.8
 ALWAYS_PRESENT = 0.4         # devices present in more of the buckets than this carry no signal
 MIN_TPMS_PAIR = 4
 TPMS_WINDOW = 30             # seconds: sensors heard this close together may share a car
+
+FP_RE = re.compile(r"^[0-9a-f]{12}$")
+FP_MIN_ADDRESSES = 3         # rotations seen before a fingerprint is worth suggesting
+FP_HANDOVER = 180            # seconds: the next address appears this soon after the last one went quiet
+FP_LOOKBACK_DAYS = 14
 
 ENTITY_KINDS = ("household", "regular", "visitor", "contractor", "other")
 
@@ -110,6 +117,7 @@ def apply_known(db, kind, ref, known, label=None):
     elif kind == "vehicle":
         db.execute("UPDATE vehicles SET known=?, label=COALESCE(label, ?) WHERE vid=?",
                    (1 if known else 0, label if known else None, ref))
+    # kind "fingerprint": nothing to flip. The watcher checks the entity's trust when the device is heard.
 
 
 def create_entity(db, name, kind="household", expires_days=None, known=True, now=None):
@@ -127,11 +135,21 @@ def create_entity(db, name, kind="household", expires_days=None, known=True, now
 
 
 def add_member(db, entity_id, kind, ref, now=None):
-    if kind not in ("device", "vehicle"):
+    if kind not in ("device", "vehicle", "fingerprint"):
         raise ValueError("bad member kind")
     row = db.execute("SELECT name, known FROM entities WHERE id=?", (entity_id,)).fetchone()
     if row is None:
         raise KeyError("no such entity")
+    if kind == "fingerprint":
+        if not FP_RE.match(ref):
+            raise ValueError("bad fingerprint")
+        if not db.execute("SELECT 1 FROM devices WHERE fp=?", (ref,)).fetchone():
+            raise KeyError("no such fingerprint")
+        db.execute("INSERT INTO entity_members(kind,ref,entity_id,added) VALUES(?,?,?,?) "
+                   "ON CONFLICT(kind,ref) DO UPDATE SET entity_id=excluded.entity_id",
+                   (kind, ref, entity_id, int(now or time.time())))
+        db.commit()
+        return
     table, col = ("devices", "mac") if kind == "device" else ("vehicles", "vid")
     if not db.execute(f"SELECT 1 FROM {table} WHERE {col}=?", (ref,)).fetchone():
         raise KeyError("no such " + kind)
@@ -141,6 +159,21 @@ def add_member(db, entity_id, kind, ref, now=None):
     if row[1]:
         apply_known(db, kind, ref, True, row[0])
     db.commit()
+
+
+def fingerprint_is_known(db, fp, now):
+    """True when this fingerprint belongs to an entity you trust and that has not lapsed."""
+    return db.execute(
+        "SELECT 1 FROM entity_members m JOIN entities e ON e.id=m.entity_id WHERE m.kind='fingerprint' "
+        "AND m.ref=? AND e.known=1 AND (e.expires IS NULL OR e.expires>?)", (fp, int(now))).fetchone() is not None
+
+
+def link_fingerprint(db, fp, entity_id=None, name=None, kind="household", expires_days=None):
+    """Treat every address with this fingerprint as one entity's device (a new entity unless one is given)."""
+    if entity_id is None:
+        entity_id = create_entity(db, name, kind, expires_days)
+    add_member(db, int(entity_id), "fingerprint", fp)
+    return int(entity_id)
 
 
 def entity_of(db, kind, ref):
@@ -203,6 +236,15 @@ def entity_view(db):
                 if r:
                     mem.append({"kind": "device", "ref": ref, "label": r[0] or r[2] or r[1] or "",
                                 "phy": r[3], "last_seen": r[4], "rand": r[5]})
+            elif kind == "fingerprint":
+                r = db.execute("SELECT MAX(last_seen), extra FROM devices WHERE fp=?", (ref,)).fetchone()
+                import insight
+                fpv = None
+                if r and r[1]:
+                    fpv = insight.fingerprint(insight.load_extra(r[1]))
+                mem.append({"kind": "fingerprint", "ref": ref, "phy": "Device fingerprint",
+                            "label": insight.describe_fingerprint(fpv[2]) if fpv else "device fingerprint",
+                            "last_seen": r[0] if r else None, "rand": 1})
             else:
                 r = db.execute("SELECT label,model,last_seen FROM vehicles WHERE vid=?", (ref,)).fetchone()
                 if r:
@@ -211,7 +253,8 @@ def entity_view(db):
         seen = max((m["last_seen"] or 0 for m in mem), default=0)
         sig = {}
         for m in mem:
-            label = ("Tyre sensors" if m["kind"] == "vehicle" else
+            label = ("Device fingerprint" if m["kind"] == "fingerprint" else
+                     "Tyre sensors" if m["kind"] == "vehicle" else
                      "Bluetooth" if "luetooth" in (m["phy"] or "") else
                      "Wi-Fi" if "802.11" in (m["phy"] or "") else (m["phy"] or "Device"))
             s = sig.setdefault(label, {"signal": label, "count": 0, "last_seen": None})
@@ -393,6 +436,49 @@ def _points(ev):
     return pts
 
 
+def fingerprint_suggestions(db, now=None):
+    """Rotating addresses that share one advertisement fingerprint and take turns.
+
+    A device that rotates its address leaves a trail: addresses with the same fingerprint that never
+    overlap and follow one another within minutes. Several phones of one model also share a
+    fingerprint, but then their addresses overlap, and those are not suggested.
+    """
+    import insight
+    now = int(now or time.time())
+    since = now - FP_LOOKBACK_DAYS * 86400
+    groups = {}
+    for fp, extra, first, last in db.execute(
+            "SELECT fp, extra, first_seen, last_seen FROM devices WHERE fp IS NOT NULL AND rand=1 AND last_seen>=?",
+            (since,)):
+        groups.setdefault(fp, {"extra": extra, "spans": []})["spans"].append((first, last))
+    linked = {r[0] for r in db.execute("SELECT ref FROM entity_members WHERE kind='fingerprint'")}
+    dismissed = {r[0] for r in db.execute("SELECT a FROM dismissed WHERE a LIKE 'fingerprint:%'")}
+    out = []
+    for fp, g in groups.items():
+        spans = sorted(g["spans"])
+        if len(spans) < FP_MIN_ADDRESSES or fp in linked or "fingerprint:" + fp in dismissed:
+            continue
+        fpv = insight.fingerprint(insight.load_extra(g["extra"]))
+        if not fpv:
+            continue
+        _, richness, parts = fpv
+        conc = insight.max_concurrency(spans)
+        if conc > 1:
+            continue           # two or more at once: several devices share this fingerprint
+        gaps = [spans[i + 1][0] - spans[i][1] for i in range(len(spans) - 1)]
+        quick = sum(1 for x in gaps if x <= FP_HANDOVER) / float(len(gaps))
+        pts = (2 if richness >= 3 else 1 if richness == 2 else 0) + (1 if len(spans) >= 4 else 0) + (1 if quick >= 0.7 else 0)
+        if pts < 2:
+            continue
+        out.append({"members": [{"kind": "fingerprint", "ref": fp, "title": "One device rotating its address",
+                                 "phy": "Device fingerprint", "last_seen": spans[-1][1]}],
+                    "evidence": {"fingerprint": {"addresses": len(spans), "describe": insight.describe_fingerprint(parts),
+                                                 "handover": round(quick, 2), "richness": richness}},
+                    "level": "high" if pts >= 4 else "medium" if pts >= 3 else "low", "points": pts,
+                    "entities": [], "fingerprint": fp})
+    return out
+
+
 def suggestions(db, cfg, now=None):
     """Pairs that look like the same entity, with evidence and a low/medium/high level."""
     now = int(now or time.time())
@@ -440,6 +526,7 @@ def suggestions(db, cfg, now=None):
     out += ent_sugs
     for s in ent_sugs:
         s.setdefault("entities", [s["entity_id"]])
+    out += fingerprint_suggestions(db, now)
     out.sort(key=lambda s: -s["points"])
     return out[:50]
 
@@ -491,6 +578,10 @@ def dismiss(db, a, b):
 
 
 def dismiss_group(db, members):
+    if len(members) == 1 and members[0]["kind"] == "fingerprint":
+        db.execute("INSERT OR IGNORE INTO dismissed(a,b) VALUES(?,?)", ("fingerprint:" + members[0]["ref"], ""))
+        db.commit()
+        return
     keys = [_key(m["kind"], m["ref"]) for m in members]
     for x in range(len(keys)):
         for y in range(x + 1, len(keys)):

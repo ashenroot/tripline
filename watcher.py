@@ -103,7 +103,7 @@ def db_connect(cfg):
     # (you removed it by hand, so automatic sources leave it alone).
     cols = {r[1] for r in db.execute("PRAGMA table_info(devices)")}
     db.execute("CREATE INDEX IF NOT EXISTS ix_presence_ref ON presence(ref)")
-    for col, ddl in (("src", "TEXT"), ("synced_at", "INTEGER"), ("bssid", "TEXT"), ("extra", "TEXT")):
+    for col, ddl in (("src", "TEXT"), ("synced_at", "INTEGER"), ("bssid", "TEXT"), ("extra", "TEXT"), ("fp", "TEXT")):
         if col not in cols:
             db.execute(f"ALTER TABLE devices ADD COLUMN {col} {ddl}")
     db.commit()
@@ -330,7 +330,11 @@ def ingest(db, d, now, home=frozenset(), home_ssids=frozenset()):
                     or any(s.casefold() in home_ssids for s in ssids)) else 0
     if ssids:
         identity.record_probes(db, mac, ssids, now)
+    new_extra = insight.harvest(d)
+    fp = insight.fingerprint(new_extra, phy)
     rand = 0 if at_home else is_random(phy, mac, manuf)
+    if rand and fp and identity.fingerprint_is_known(db, fp[0], now):
+        at_home, rand = 1, 0      # a fingerprint you linked to a trusted entity: treat as that entity's device
     if has_signal and not 0 <= now - _last_sighting.get(mac, -10**12) < SIGHTING_INTERVAL:
         _last_sighting[mac] = now
         db.execute("INSERT INTO sightings VALUES(?,?,?,?,?)", (now, mac, phy, rssi, rand))
@@ -346,16 +350,15 @@ def ingest(db, d, now, home=frozenset(), home_ssids=frozenset()):
         (mac, phy, manuf, name, rand, now, now, rssi, at_home))
     if ap:
         db.execute("UPDATE devices SET bssid=? WHERE mac=?", (ap, mac))
-    store_extra(db, mac, d)
+    store_extra(db, mac, new_extra, fp[0] if fp else None)
     if not has_signal:
         return None
     known = db.execute("SELECT known FROM devices WHERE mac=?", (mac,)).fetchone()[0]
     return mac, phy, manuf, rssi, rand, known
 
 
-def store_extra(db, mac, d):
+def store_extra(db, mac, new, fp=None):
     """Keep the stable extras (capability fingerprints, AP names, clients). Written only when they change."""
-    new = insight.harvest(d)
     if not new:
         return
     old = _extra_cache.get(mac)
@@ -367,7 +370,10 @@ def store_extra(db, mac, d):
     cmp_old = {k: v for k, v in old.items() if k != "uptime_s"}
     cmp_new = {k: v for k, v in merged.items() if k != "uptime_s"}
     if cmp_old != cmp_new or "uptime_s" not in old:
-        db.execute("UPDATE devices SET extra=? WHERE mac=?", (json.dumps(merged, separators=(",", ":")), mac))
+        db.execute("UPDATE devices SET extra=?, fp=COALESCE(?, fp) WHERE mac=?",
+                   (json.dumps(merged, separators=(",", ":")), fp, mac))
+    elif fp:
+        db.execute("UPDATE devices SET fp=? WHERE mac=? AND (fp IS NULL OR fp!=?)", (fp, mac, fp))
     _extra_cache[mac] = merged
 
 

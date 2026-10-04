@@ -350,6 +350,15 @@ def api_device(mac):
         "SELECT ts,title,message FROM alerts WHERE message LIKE ? OR title LIKE ? ORDER BY ts DESC LIMIT 5",
         (f"%{mac}%", f"%{mac}%"))]
     out["now"] = now
+    if d["fp"]:
+        n_addr, first, last = db.execute("SELECT COUNT(*), MIN(first_seen), MAX(last_seen) FROM devices WHERE fp=?",
+                                         (d["fp"],)).fetchone()
+        fpv = insight.fingerprint(ex)
+        member = db.execute("SELECT e.name FROM entity_members m JOIN entities e ON e.id=m.entity_id "
+                            "WHERE m.kind='fingerprint' AND m.ref=?", (d["fp"],)).fetchone()
+        out["fingerprint"] = {"id": d["fp"], "addresses": n_addr, "first_seen": first, "last_seen": last,
+                              "describe": insight.describe_fingerprint(fpv[2]) if fpv else None,
+                              "entity": member[0] if member else None}
     out.update(_device_extras(db, mac, now))
     return jsonify(out)
 
@@ -603,7 +612,12 @@ def api_entities():
     ents = identity.entity_view(db)
     off = time.localtime().tm_gmtoff
     for e in ents:
-        mem = [(m["kind"], m["ref"]) for m in e["members"]]
+        mem = []
+        for m in e["members"]:
+            if m["kind"] == "fingerprint":   # every address that carried this fingerprint
+                mem += [("device", r[0]) for r in db.execute("SELECT mac FROM devices WHERE fp=?", (m["ref"],))]
+            else:
+                mem.append((m["kind"], m["ref"]))
         e["pattern"] = insight.entity_pattern(db, mem, now, off)
     return jsonify({"entities": ents, "kinds": list(identity.ENTITY_KINDS)})
 
@@ -661,6 +675,8 @@ def _suggestions():
     out = identity.suggestions(db, cfg())
     for s in out:
         for m in s["members"]:
+            if m["kind"] == "fingerprint":
+                continue
             if m["kind"] == "device":
                 r = db.execute("SELECT label,manuf,name,phy,last_seen FROM devices WHERE mac=?", (m["ref"],)).fetchone()
                 m["title"] = (r[0] or r[2] or r[1] or m["ref"]) if r else m["ref"]
@@ -684,7 +700,10 @@ def _members(b, minimum=2):
 def api_suggestions_accept():
     b = body()
     try:
-        if b.get("entity_id") is not None:
+        fps = [m for m in (b.get("members") or []) if isinstance(m, dict) and m.get("kind") == "fingerprint"]
+        if len(fps) == 1 and len(b["members"]) == 1:
+            eid = identity.link_fingerprint(get_db(), str(fps[0].get("ref")), b.get("entity_id"), **_entity_args(b))
+        elif b.get("entity_id") is not None:
             eid = identity.add_to_entity(get_db(), int(b["entity_id"]), _members(b, 1))
         else:
             eid = identity.link_group(get_db(), _members(b), **_entity_args(b))

@@ -234,6 +234,7 @@ Click a row in the Devices table to open the detail panel. Fields appear when th
 |---|---|
 | MAC, Radio, Vendor | The address, Wi-Fi or Bluetooth, and the manufacturer Kismet resolved from the address prefix |
 | Broadcast name | The name the device advertises (Bluetooth names, access-point names) |
+| Fingerprint | The advertisement facts that identify this device across address rotations, how many addresses carry them, and the entity they are linked to |
 | Address type | Locally administered means a private or random address; globally unique means assigned to the vendor |
 | Vendor prefix | The first three bytes of the address, which identify the manufacturer |
 | Kismet type | What Kismet thinks it is (for example Wi-Fi client or access point) |
@@ -432,6 +433,18 @@ vehicle, regular visitor or contractor).
   Members never need to appear on the same trip: a watch one day, tyre sensors another, and a
   phone's network names a third all count toward the same entity, and each entity card lists
   which signals have been seen and when. (Shared time windows are still pairwise.)
+- **Device fingerprints (rotating Bluetooth and Wi-Fi addresses).** A device that rotates its
+  address keeps its advertisement facts: device class, advertised services, manufacturer data,
+  advertised name and transmit power. Addresses that share those facts, never overlap in time and
+  follow one another within a few minutes are suggested as one device ("One device rotating its
+  address"). Accepting links the fingerprint to an entity: every future rotating address with
+  that fingerprint is treated as the entity's device, marked known and not counted as rotating,
+  for as long as the entity is trusted and not lapsed. Several phones of one model share a
+  fingerprint, but their addresses overlap, so those are never suggested. Use it for a
+  distinctive device (a named watch, an unusual service list). A visitor with the same model and
+  settings would match too, and the suggestion's confidence rises with how many distinguishing
+  facts the fingerprint has. Wi-Fi probe fingerprints identify a hardware and driver
+  combination, so they score low.
 - **Tyre sensors.** Sensors heard together repeatedly are folded into one suggestion per car.
 - **Shared time windows.** Devices and vehicles that keep appearing in the same 5-minute
   windows are suggested as a pair. Always-present devices are ignored.

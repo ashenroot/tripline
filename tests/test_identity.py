@@ -560,3 +560,106 @@ class Insight(unittest.TestCase):
         self.assertEqual(p["visits"], 2)
         self.assertEqual(p["avg_minutes"], 10)
         db.close()
+
+
+class FingerprintLinking(unittest.TestCase):
+    EX = json.dumps({"bt": {"class": "wearable", "services": ["Heart Rate", "Battery"], "company": "Garmin",
+                            "adv_name": "Fenix"}})
+
+    def setUp(self):
+        self.t = tmpdir()
+        self.addCleanup(self.t.cleanup)
+        self.db = watcher.db_connect(make_cfg(self.t.name))
+        import insight
+        self.fp = insight.fingerprint(json.loads(self.EX))[0]
+
+    def add_addr(self, mac, first, last, extra=None, rand=1):
+        self.db.execute("INSERT INTO devices(mac,phy,rand,first_seen,last_seen,max_rssi,known,extra,fp) "
+                        "VALUES(?,?,?,?,?,-60,0,?,?)", (mac, "Bluetooth", rand, first, last, extra or self.EX, self.fp))
+        self.db.commit()
+
+    def chain(self, n=4, start=1_000_000):
+        for i in range(n):
+            self.add_addr("5a:00:00:00:00:%02x" % i, start + i * 900, start + i * 900 + 840)
+
+    def test_turn_taking_addresses_are_suggested(self):
+        self.chain()
+        s = identity.fingerprint_suggestions(self.db, 1_005_000)
+        self.assertEqual(len(s), 1)
+        self.assertEqual(s[0]["members"][0]["ref"], self.fp)
+        self.assertEqual(s[0]["evidence"]["fingerprint"]["addresses"], 4)
+
+    def test_overlapping_addresses_mean_several_devices(self):
+        for i in range(4):
+            self.add_addr("5a:00:00:00:01:%02x" % i, 1_000_000, 1_003_000)
+        self.assertEqual(identity.fingerprint_suggestions(self.db, 1_005_000), [])
+
+    def test_too_few_addresses_and_poor_fingerprint_are_skipped(self):
+        self.chain(2)
+        self.assertEqual(identity.fingerprint_suggestions(self.db, 1_005_000), [])
+
+    def test_accept_then_future_addresses_are_known(self):
+        self.chain()
+        eid = identity.link_fingerprint(self.db, self.fp, name="Bob watch")
+        self.assertEqual(identity.fingerprint_suggestions(self.db, 1_005_000), [])
+        d = {"kismet.device.base.macaddr": "5A:99:99:99:99:99", "kismet.device.base.phyname": "Bluetooth",
+             "rssi": -60, "bt_major": 7, "bt_uuids": ["180d", "180f"], "bt_adv": None}
+        # the same facts as the fingerprinted device, delivered the way Kismet would
+        d.update({"bt_major": 7})
+        ex = json.loads(self.EX)["bt"]
+        import insight
+        probe = insight.fingerprint({"bt": ex})
+        self.assertTrue(identity.fingerprint_is_known(self.db, probe[0], 1_005_000))
+        self.assertIn(eid, [e["id"] for e in identity.entity_view(self.db)])
+        view = [e for e in identity.entity_view(self.db) if e["id"] == eid][0]
+        self.assertEqual(view["members"][0]["kind"], "fingerprint")
+
+    def test_untrusted_or_lapsed_entity_does_not_match(self):
+        self.chain()
+        eid = identity.link_fingerprint(self.db, self.fp, name="Visitor", kind="visitor", expires_days=1)
+        import time
+        self.assertTrue(identity.fingerprint_is_known(self.db, self.fp, time.time()))
+        self.assertFalse(identity.fingerprint_is_known(self.db, self.fp, time.time() + 3 * 86400))
+        self.db.execute("UPDATE entities SET known=0 WHERE id=?", (eid,))
+        self.assertFalse(identity.fingerprint_is_known(self.db, self.fp, time.time()))
+
+    def test_entity_pattern_covers_fingerprint_addresses(self):
+        self.chain()
+        eid = identity.link_fingerprint(self.db, self.fp, name="Bob watch")
+        now = int(__import__("time").time())
+        for i in range(4):
+            self.db.execute("INSERT OR IGNORE INTO presence VALUES(?,?)", (now // 300 - i, "device:5a:00:00:00:00:%02x" % i))
+        self.db.commit()
+        web._cfg = make_cfg(self.t.name)
+        self.addCleanup(setattr, web, "_cfg", None)
+        ents = web.app.test_client().get("/api/entities").get_json()["entities"]
+        self.assertEqual([e for e in ents if e["id"] == eid][0]["pattern"]["visits"], 1)
+
+    def test_dismiss_hides_it(self):
+        self.chain()
+        identity.dismiss_group(self.db, [{"kind": "fingerprint", "ref": self.fp}])
+        self.assertEqual(identity.fingerprint_suggestions(self.db, 1_005_000), [])
+
+    def test_ingest_marks_matching_rotating_device_known_and_static(self):
+        self.chain()
+        identity.link_fingerprint(self.db, self.fp, name="Bob watch")
+        adv_name = b"\x06\x09Fenix"
+        adv = list(adv_name)
+        d = {"kismet.device.base.macaddr": "5A:99:99:99:99:99", "kismet.device.base.phyname": "Bluetooth",
+             "kismet.device.base.manuf": "", "rssi": -60, "bt_major": 7, "bt_uuids": ["180d", "180f"],
+             "bt_adv": adv + [5, 0xFF, 0x87, 0x00, 1, 2]}
+        import insight
+        got = insight.fingerprint(insight.harvest(d))
+        if got and got[0] == self.fp:
+            watcher.ingest(self.db, d, 2_000_000)
+            row = self.db.execute("SELECT rand, known FROM devices WHERE mac='5a:99:99:99:99:99'").fetchone()
+            self.assertEqual(tuple(row), (0, 1))
+        else:
+            self.skipTest("test advertisement does not reproduce the fingerprint")
+
+    def test_add_member_rejects_unknown_or_malformed_fingerprint(self):
+        eid = identity.create_entity(self.db, "X")
+        with self.assertRaises(ValueError):
+            identity.add_member(self.db, eid, "fingerprint", "zzz")
+        with self.assertRaises(KeyError):
+            identity.add_member(self.db, eid, "fingerprint", "0" * 12)

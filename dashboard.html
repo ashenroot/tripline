@@ -937,6 +937,7 @@ function evidenceText(ev) {
   const out = [];
   if (ev.ssid) out.push((ev.ssid.from_members ? 'Probed names shared with the entity: ' : 'Both probed for: ') + ev.ssid.ssids.join(', '));
   if (ev.tpms) out.push('Tyre sensors heard together at least ' + ev.tpms.count + ' times');
+  if (ev.fingerprint) out.push(ev.fingerprint.addresses + ' addresses took turns, never at the same time (' + Math.round(ev.fingerprint.handover * 100) + '% appeared within 3 minutes of the last): ' + ev.fingerprint.describe);
   if (ev.cooccur) out.push('Present in the same time windows ' + ev.cooccur.shared + ' times (' + Math.round(ev.cooccur.ratio * 100) + '% overlap)');
   return out;
 }
@@ -961,11 +962,12 @@ async function loadEntities() {
     meta.appendChild(el('span', 'badge ' + x.level, x.level + ' confidence'));
     for (const t of evidenceText(x.evidence)) meta.appendChild(el('span', 'dim', t));
     card.appendChild(meta);
+    if (x.fingerprint) card.appendChild(Object.assign(el('div', 'dim', 'Accepting makes any future rotating address with this fingerprint count as this entity, and known while the entity is trusted. A visitor with the same model and settings would match too, so use this for a distinctive device (a named watch, an unusual service list), not for a common phone model.'), { style: 'margin-top:6px' }));
     const act = el('div', 'row'); act.style.marginTop = '8px';
     const existing = x.entities.length > 0 || !!x.entity_id;
     const name = el('input'); name.type = 'text'; name.maxLength = 40; name.placeholder = existing ? 'adds to the existing entity' : 'Name (Bob, Truck...)';
     name.disabled = existing; if (x.entity_id) name.style.display = 'none';
-    const ok = el('button', 'btn primary', x.entity_id ? 'Add to ' + x.entity_name : x.members.length > 2 ? 'Link all ' + x.members.length + ' as one entity' : 'Link as one entity');
+    const ok = el('button', 'btn primary', x.fingerprint ? 'Treat as one device' : x.entity_id ? 'Add to ' + x.entity_name : x.members.length > 2 ? 'Link all ' + x.members.length + ' as one entity' : 'Link as one entity');
     const refs = x.members.map(m => ({ kind: m.kind, ref: m.ref }));
     ok.onclick = async () => {
       if (!existing && !name.value.trim()) { name.focus(); return; }
@@ -1190,6 +1192,7 @@ async function openDevice(mac) {
   if (bt.adv_name) row('Advertised name', bt.adv_name);
   if (bt.services && bt.services.length) row('Services', bt.services.join(', '));
   if (bt.tx_dbm !== undefined) row('Transmit power', bt.tx_dbm + ' dBm');
+  if (d.fingerprint) row('Fingerprint', (d.fingerprint.describe || d.fingerprint.id) + '; ' + d.fingerprint.addresses + ' address' + (d.fingerprint.addresses > 1 ? 'es' : '') + ' share it' + (d.fingerprint.entity ? ', linked to ' + d.fingerprint.entity : ''));
   if (d.distance) row('Rough range now', d.distance + ' (very rough, walls and antennas change it)');
   row('Signal trend', d.trend.label + (d.trend.slope !== null ? ' (' + (d.trend.slope > 0 ? '+' : '') + d.trend.slope + ' dB/min)' : ''));
   const ex = d.extra || {};

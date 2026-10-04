@@ -171,6 +171,67 @@ def address_kind(mac, vendor_known):
             0: "non-resolvable private (rotates)", 2: "reserved or public with an unknown vendor"}[top]
 
 
+def fingerprint(extra, phy=""):
+    """A device-level fingerprint from stable advertisement facts, for recognising a rotating address.
+
+    Returns (id, richness, parts) or None. Richness counts the distinguishing facts used: a name or a
+    service list narrows it a lot, a bare manufacturer does not. Wi-Fi probe fingerprints identify a
+    hardware and driver combination, so they score low.
+    """
+    import hashlib
+    parts = {}
+    bt = extra.get("bt") or {}
+    for k in ("class", "subclass", "company", "apple_message", "adv_name", "type"):
+        if bt.get(k):
+            parts[k] = bt[k]
+    if bt.get("services"):
+        parts["services"] = sorted(bt["services"])
+    if isinstance(bt.get("tx_dbm"), (int, float)):
+        parts["tx_dbm"] = bt["tx_dbm"]
+    if not parts and extra.get("fp_probe"):
+        parts["wifi_probe"] = extra["fp_probe"]
+    if not parts:
+        return None
+    richness = len(parts)
+    digest = hashlib.sha1(json.dumps(parts, sort_keys=True).encode()).hexdigest()[:12]
+    return digest, richness, parts
+
+
+def describe_fingerprint(parts):
+    bits = []
+    if parts.get("adv_name"):
+        bits.append('named "%s"' % parts["adv_name"])
+    if parts.get("class"):
+        bits.append(parts["class"])
+    if parts.get("company"):
+        bits.append(parts["company"] + (" " + parts["apple_message"] if parts.get("apple_message") else ""))
+    if parts.get("services"):
+        bits.append("services " + ", ".join(parts["services"][:4]))
+    if parts.get("wifi_probe"):
+        bits.append("Wi-Fi probe fingerprint %s" % parts["wifi_probe"])
+    return "; ".join(bits) or "unlabelled device"
+
+
+def max_concurrency(intervals, tolerance=45):
+    """Largest number of lifetimes that overlap. Each lifetime is trimmed at both ends first, so the
+    seconds where an old and a new address of one device briefly coexist do not count."""
+    events = []
+    for a, b in intervals:
+        a2, b2 = a + tolerance, b - tolerance
+        if b2 < a2:
+            a2 = b2 = (a + b) / 2.0
+            events.append((a2, 1))
+            events.append((b2 + 0.001, -1))
+        else:
+            events.append((a2, 1))
+            events.append((b2 + 0.001, -1))
+    best = cur = 0
+    for _, d in sorted(events):
+        cur += d
+        best = max(best, cur)
+    return best
+
+
 def merge_extra(old, new):
     """Fold a fresh harvest into what is stored: channels accumulate, everything else is replaced."""
     merged = dict(old)
