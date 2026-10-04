@@ -57,6 +57,9 @@ services. Re-running it upgrades the code and keeps your config and database.
 | `--wifi-iface wlan1` | Choose the monitor adapter (default: the one adapter that is not carrying your default route, else it asks) |
 | `--web-bind ADDR` / `--web-port N` | Move the web UI; a non-loopback address gets a generated password, shown once |
 | `--ntfy-topic auto` | Turn on ntfy alerts with a generated random topic |
+| `--bt-iface hci1` | Choose the Bluetooth adapter (default: a USB adapter if present, else the built-in) |
+| `--sdr` / `--no-sdr` | Force or skip vehicle detection (default: enabled when an RTL-SDR or Nooelec dongle is plugged in) |
+| `--sdr-freq 433.92M` | TPMS frequency (default `315M`, the US norm) |
 | `--no-kismet` | Use your own Kismet install |
 | `--no-packages` | Skip apt (other distros: install Kismet and Flask yourself first) |
 | `--no-services` | Copy files only |
@@ -81,6 +84,29 @@ Afterwards leave it in `learning` mode for 1-2 weeks, then press Arm in the web 
    copy `config.example.ini` to `/etc/tripline/config.ini` and edit it.
 5. Copy `systemd/*.service` to `/etc/systemd/system/`, set `User=`, then
    `sudo systemctl enable --now kismet tripline-watcher tripline-web`.
+
+## Vehicle detection (RTL-SDR)
+
+With an RTL-SDR or Nooelec dongle, `tpms.py` runs `rtl_433` and records tyre-pressure
+sensor IDs. Each sensor ID is a fixed identifier, so it works despite randomized MACs. A car
+has up to four. Sensors transmit while the wheels turn, so this reports vehicles arriving
+and leaving, and does not see parked ones.
+
+- Unknown sensors raise an alert in `home` and `away` mode (respecting the guest window and
+  the alert cooldown). In `learning` mode they are only logged.
+- Sensors are never marked known automatically. Mark your own vehicles in the Vehicles
+  section of the Devices tab and give them a label.
+- The installer enables this when it finds a dongle, installs `rtl-433`, and blacklists the
+  kernel TV-tuner driver that otherwise claims the device (a reboot or re-plug may be needed).
+  Re-run `install.sh` after plugging a dongle in later.
+- `[vehicles] frequencies` takes several values and hops between them; `command` replaces
+  the whole decoder command, and `tpms.py run --stdin` reads `rtl_433` JSON from a pipe.
+- Range is short. A road several hundred feet away is unlikely to register, which is the
+  point; a sensor on your own driveway should.
+
+Unverified on real hardware: the `rtl_433` JSON fields (`type: TPMS`, `pressure_*`), the
+315 MHz default across your region's sensors, and the Bluetooth and USB detection in the
+installer.
 
 ## Known-device sources
 
@@ -139,5 +165,5 @@ GPL-3.0-or-later. See `LICENSE`. Modified versions that you distribute must be r
 
 ## Not yet done
 
-Vehicle detection via `rtl_433` (TPMS sensors), additional notification channels, and
-verification on real hardware.
+Additional notification channels, a vehicle arrival/departure timeline, and verification
+on real hardware.

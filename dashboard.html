@@ -200,6 +200,12 @@ td input{width:150px}
     <button class="btn primary" id="net-add">Add network</button>
     <span class="dim" id="net-msg"></span>
   </div>
+  <div id="veh-wrap" class="hidden">
+    <h2>Vehicles</h2>
+    <p class="dim" style="margin:0 0 8px">Tyre-pressure sensors heard by the SDR. A car has up to four. They transmit while the wheels turn, so this shows arrivals and departures. Mark your own vehicles known so they stop alerting.</p>
+    <div class="tablewrap"><table><tbody id="veh-body"></tbody></table></div>
+    <div style="height:18px"></div>
+  </div>
   <h2>Devices</h2>
   <div class="row">
     <select id="dev-filter" aria-label="Filter">
@@ -258,7 +264,7 @@ function setTab(t) {
   $('#tab-dash').setAttribute('aria-selected', t === 'dash');
   $('#tab-dev').setAttribute('aria-selected', t === 'dev');
   if (t === 'dash') { resizeRadar(); resizeTl(); if (lastAct) drawActivity(lastAct); }
-  if (t === 'dev') { loadNetworks(); loadDevices(); }
+  if (t === 'dev') { loadNetworks(); loadVehicles(); loadDevices(); }
 }
 $('#tab-dash').onclick = () => setTab('dash');
 $('#tab-dev').onclick = () => setTab('dev');
@@ -770,6 +776,28 @@ act.addEventListener('pointermove', e => {
 });
 act.addEventListener('pointerleave', () => { tip2.style.display = 'none'; });
 new ResizeObserver(() => { if (lastAct && tab === 'dash') drawActivity(lastAct); }).observe(act);
+
+/* ---------- vehicles ---------- */
+async function loadVehicles() {
+  let d;
+  try { d = await api('/api/vehicles'); } catch (e) { return; }
+  $('#veh-wrap').classList.toggle('hidden', !d.enabled && !d.vehicles.length);
+  const body = $('#veh-body'); body.replaceChildren();
+  const now = Date.now() / 1000;
+  for (const v of d.vehicles) {
+    const tr = el('tr');
+    const c1 = el('td'); c1.appendChild(el('div', null, v.label || v.model)); c1.appendChild(el('div', 'mono dim', v.vid));
+    tr.appendChild(c1);
+    tr.appendChild(el('td', 'dim', 'last heard ' + rel(now - v.last_seen) + ' ago'));
+    tr.appendChild(el('td', 'mono', String(v.seen_count) + ' msgs'));
+    const c4 = el('td'); const inp = el('input'); inp.type = 'text'; inp.maxLength = 40; inp.value = v.label || ''; inp.placeholder = 'label (e.g. Truck)';
+    c4.appendChild(inp); tr.appendChild(c4);
+    const c5 = el('td'); const b = el('button', 'btn ' + (v.known ? 'danger' : 'primary'), v.known ? 'Unmark' : 'Mark known');
+    b.onclick = async () => { await post('/api/vehicles/known', { vid: v.vid, known: !v.known, label: inp.value }); loadVehicles(); };
+    c5.appendChild(b); tr.appendChild(c5); body.appendChild(tr);
+  }
+  if (!d.vehicles.length) { const tr = el('tr'); const td = el('td', 'dim', 'No vehicle sensors heard yet.'); td.colSpan = 5; tr.appendChild(td); body.appendChild(tr); }
+}
 
 /* ---------- my networks ---------- */
 async function loadNetworks() {

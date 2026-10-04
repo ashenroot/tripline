@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS counts (ts INTEGER, n INTEGER);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS alerts (
     ts INTEGER, title TEXT, message TEXT, priority TEXT);
+CREATE TABLE IF NOT EXISTS vehicles (
+    vid TEXT PRIMARY KEY, model TEXT, sensor_id TEXT, first_seen INTEGER, last_seen INTEGER,
+    seen_count INTEGER DEFAULT 0, known INTEGER DEFAULT 0, label TEXT,
+    last_rssi REAL, last_freq REAL);
 CREATE TABLE IF NOT EXISTS networks (
     bssid TEXT PRIMARY KEY, label TEXT, added INTEGER);
 """

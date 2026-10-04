@@ -12,6 +12,9 @@
 #   --web-bind ADDR        web UI address (default 127.0.0.1; anything else gets a generated password)
 #   --web-port PORT        web UI port (default 8080)
 #   --ntfy-topic NAME|auto enable ntfy alerts ("auto" generates a long random topic)
+#   --bt-iface hciN        Bluetooth adapter (default: a USB adapter if present, else the built-in)
+#   --sdr / --no-sdr       force or skip RTL-SDR vehicle (TPMS) setup (default: if a dongle is found)
+#   --sdr-freq FREQ        TPMS frequency (default 315M for the US; Europe uses 433.92M)
 #   --no-kismet            skip the Kismet install and its config (use your own Kismet)
 #   --no-packages          skip apt entirely (you installed the dependencies yourself)
 #   --no-services          do not install or start systemd units
@@ -20,7 +23,8 @@
 #   -y, --yes              never prompt
 #   -h, --help             show this help
 #
-# Environment overrides (for packaging and tests): PREFIX, ETC_DIR, DATA_DIR, UNIT_DIR.
+# Environment overrides (for packaging and tests): PREFIX, ETC_DIR, DATA_DIR, UNIT_DIR,
+# KISMET_ETC, MODPROBE_DIR, USB_SYSFS, BT_SYSFS.
 set -euo pipefail
 
 PREFIX="${PREFIX:-/opt/tripline}"
@@ -28,9 +32,13 @@ ETC_DIR="${ETC_DIR:-/etc/tripline}"
 DATA_DIR="${DATA_DIR:-/var/lib/tripline}"
 UNIT_DIR="${UNIT_DIR:-/etc/systemd/system}"
 KISMET_ETC="${KISMET_ETC:-/etc/kismet}"
+MODPROBE_DIR="${MODPROBE_DIR:-/etc/modprobe.d}"
+USB_SYSFS="${USB_SYSFS:-/sys/bus/usb/devices}"
+BT_SYSFS="${BT_SYSFS:-/sys/class/bluetooth}"
 SVC_USER="tripline"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+BT_IFACE="" SDR_MODE="auto" SDR_FREQ="315M"
 WIFI_IFACE="" WEB_BIND="127.0.0.1" WEB_PORT="8080" NTFY_TOPIC=""
 DO_KISMET=1 DO_PACKAGES=1 DO_SERVICES=1 UNINSTALL=0 PURGE=0 YES=0
 
@@ -48,6 +56,10 @@ while [ $# -gt 0 ]; do
     --web-bind)   WEB_BIND="${2:?}"; shift 2 ;;
     --web-port)   WEB_PORT="${2:?}"; shift 2 ;;
     --ntfy-topic) NTFY_TOPIC="${2:?}"; shift 2 ;;
+    --bt-iface)   BT_IFACE="${2:?}"; shift 2 ;;
+    --sdr)        SDR_MODE="yes"; shift ;;
+    --no-sdr)     SDR_MODE="no"; shift ;;
+    --sdr-freq)   SDR_FREQ="${2:?}"; shift 2 ;;
     --no-kismet)  DO_KISMET=0; shift ;;
     --no-packages) DO_PACKAGES=0; shift ;;
     --no-services) DO_SERVICES=0; shift ;;
@@ -62,24 +74,46 @@ done
 [ "$(id -u)" = 0 ] || die "run as root: sudo ./install.sh"
 [[ "$WEB_PORT" =~ ^[0-9]+$ ]] && [ "$WEB_PORT" -ge 1 ] && [ "$WEB_PORT" -le 65535 ] || die "bad --web-port"
 [[ "$WIFI_IFACE" =~ ^[A-Za-z0-9_.-]*$ ]] || die "bad --wifi-iface"
+[[ "$BT_IFACE" =~ ^[A-Za-z0-9_.-]*$ ]] || die "bad --bt-iface"
+[[ "$SDR_FREQ" =~ ^[0-9]+(\.[0-9]+)?[kKmMgG]?$ ]] || die "bad --sdr-freq (example: 315M)"
 [[ "$NTFY_TOPIC" =~ ^[A-Za-z0-9_-]*$ ]] || die "--ntfy-topic may contain only letters, digits, - and _"
 
 have_systemd() { [ "$DO_SERVICES" = 1 ] && command -v systemctl >/dev/null && [ -d /run/systemd/system ]; }
+
+# RTL2832U dongles (RTL-SDR, Nooelec NESDR) enumerate as 0bda:2832 or 0bda:2838.
+find_sdr() {
+  local d
+  for d in "$USB_SYSFS"/*/; do
+    [ -r "$d/idVendor" ] && [ -r "$d/idProduct" ] || continue
+    case "$(cat "$d/idVendor"):$(cat "$d/idProduct")" in 0bda:2832|0bda:2838) return 0 ;; esac
+  done
+  return 1
+}
+
+# Bluetooth adapters, USB ones first (a USB dongle is the reason to have bought one).
+list_bt() {
+  local h usb="" onb=""
+  for h in "$BT_SYSFS"/hci*; do
+    [ -e "$h" ] || continue
+    if readlink -f "$h" | grep -q '/usb'; then usb="$usb $(basename "$h")"; else onb="$onb $(basename "$h")"; fi
+  done
+  echo "$usb $onb" | xargs -n1 2>/dev/null || true
+}
 
 # ---------------------------------------------------------------- uninstall
 if [ "$UNINSTALL" = 1 ]; then
   say "Stopping services"
   if have_systemd; then
-    for u in tripline-sync tripline-web tripline-watcher; do
+    for u in tripline-tpms tripline-sync tripline-web tripline-watcher; do
       systemctl disable --now "$u" 2>/dev/null || true
     done
     systemctl disable --now kismet 2>/dev/null || true
   fi
-  rm -f "$UNIT_DIR"/tripline-{watcher,web,sync}.service "$UNIT_DIR"/kismet.service
+  rm -f "$UNIT_DIR"/tripline-{watcher,web,sync,tpms}.service "$UNIT_DIR"/kismet.service
   have_systemd && systemctl daemon-reload
   rm -rf "$PREFIX"
   if [ "$PURGE" = 1 ]; then
-    rm -rf "$ETC_DIR" "$DATA_DIR"
+    rm -rf "$ETC_DIR" "$DATA_DIR" "$MODPROBE_DIR/blacklist-tripline-rtl.conf"
     id "$SVC_USER" >/dev/null 2>&1 && userdel "$SVC_USER" 2>/dev/null || true
     say "Removed code, config, data and the $SVC_USER user. Kismet itself was left installed (apt remove kismet)."
   else
@@ -104,6 +138,23 @@ if [ "$APT" = 1 ]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y -qq python3 python3-flask iw wget gnupg ca-certificates >/dev/null
+fi
+
+SDR=0
+case "$SDR_MODE" in
+  yes) SDR=1 ;;
+  auto) if find_sdr; then SDR=1; say "RTL-SDR dongle found: enabling vehicle (TPMS) detection"; else say "No RTL-SDR dongle found; vehicle detection stays off (plug one in and re-run to enable it)"; fi ;;
+esac
+if [ "$SDR" = 1 ] && [ "$APT" = 1 ]; then
+  say "Installing rtl_433"
+  apt-get install -y -qq rtl-433 rtl-sdr >/dev/null
+fi
+if [ "$SDR" = 1 ]; then
+  # The kernel's TV-tuner driver grabs these dongles; rtl_433 needs them free.
+  install -d "$MODPROBE_DIR"
+  printf 'blacklist dvb_usb_rtl28xxu\nblacklist rtl2832\nblacklist rtl2830\n' >"$MODPROBE_DIR/blacklist-tripline-rtl.conf"
+  command -v rmmod >/dev/null && rmmod dvb_usb_rtl28xxu 2>/dev/null || true
+  command -v rtl_433 >/dev/null || warn "rtl_433 not found; install it (apt install rtl-433) before starting tripline-tpms."
 fi
 
 if [ "$DO_KISMET" = 1 ]; then
@@ -147,11 +198,14 @@ if [ "$DO_KISMET" = 1 ]; then
   usermod -aG kismet "$SVC_USER"
   getent group bluetooth >/dev/null && usermod -aG bluetooth "$SVC_USER" || true
 fi
+if [ "$SDR" = 1 ]; then
+  getent group plugdev >/dev/null && usermod -aG plugdev "$SVC_USER" || true
+fi
 
 # ---------------------------------------------------------------- code
 say "Installing code to $PREFIX"
 install -d "$PREFIX" "$PREFIX/sources"
-install -m 0644 "$SRC"/watcher.py "$SRC"/web.py "$SRC"/known_sync.py "$SRC"/dashboard.html "$PREFIX"/
+install -m 0644 "$SRC"/watcher.py "$SRC"/web.py "$SRC"/known_sync.py "$SRC"/tpms.py "$SRC"/dashboard.html "$PREFIX"/
 install -m 0644 "$SRC"/sources/*.py "$PREFIX/sources/"
 
 install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" "$DATA_DIR"
@@ -188,6 +242,15 @@ else
     say "ntfy alerts on. Subscribe to topic: $NTFY_TOPIC (app, or https://ntfy.sh/$NTFY_TOPIC)"
   fi
 fi
+if [ "$SDR" = 1 ]; then
+  if grep -q '^\[vehicles\]' "$CFG"; then
+    setkey vehicles enabled true
+    setkey vehicles frequencies "$SDR_FREQ"
+  else
+    warn "$CFG has no [vehicles] section (older install). Copy it from config.example.ini to enable vehicle detection."
+    SDR=0
+  fi
+fi
 [ -f "$ETC_DIR/known_devices.txt" ] || install -m 0640 -g "$SVC_USER" "$SRC/examples/known_devices.txt" "$ETC_DIR/known_devices.txt"
 
 # ---------------------------------------------------------------- Kismet config
@@ -210,14 +273,25 @@ if [ "$DO_KISMET" = 1 ]; then
     warn "No monitor Wi-Fi adapter chosen. Plug one in, then re-run with --wifi-iface IFACE. Kismet will start with Bluetooth only."
   fi
 
+  if [ -z "$BT_IFACE" ]; then
+    mapfile -t BTS < <(list_bt)
+    if [ "${#BTS[@]}" -ge 1 ]; then
+      BT_IFACE="${BTS[0]}"
+      [ "${#BTS[@]}" -gt 1 ] && say "Bluetooth adapters: ${BTS[*]}. Using $BT_IFACE (a USB adapter if you have one). Override with --bt-iface."
+    else
+      BT_IFACE="hci0"
+    fi
+  fi
+  say "Bluetooth adapter: $BT_IFACE"
+
   say "Writing $KISMET_ETC/kismet_site.conf"
   install -d "$KISMET_ETC"
   {
     echo "# Generated by Tripline install.sh. Edit freely; re-running replaces this file."
     if [ -n "$WIFI_IFACE" ]; then
-      sed -e "s|^source=wlan1:|source=$WIFI_IFACE:|" "$SRC/examples/kismet_site.conf"
+      sed -e "s|^source=wlan1:|source=$WIFI_IFACE:|" -e "s|^source=hci0:|source=$BT_IFACE:|" "$SRC/examples/kismet_site.conf"
     else
-      sed -e '/^source=wlan1:/d' "$SRC/examples/kismet_site.conf"
+      sed -e '/^source=wlan1:/d' -e "s|^source=hci0:|source=$BT_IFACE:|" "$SRC/examples/kismet_site.conf"
     fi
   } >"$KISMET_ETC/kismet_site.conf"
   install -d -o "$SVC_USER" -g "$SVC_USER" /var/log/kismet
@@ -228,14 +302,14 @@ if [ "$DO_KISMET" = 1 ]; then
   chown "$SVC_USER:$SVC_USER" "$DATA_DIR/.kismet/kismet_httpd.conf"
   chmod 0600 "$DATA_DIR/.kismet/kismet_httpd.conf"
 
-  [ -d /sys/class/bluetooth ] && ls /sys/class/bluetooth 2>/dev/null | grep -q . \
+  [ -n "$(list_bt)" ] \
     || warn "No Bluetooth adapter found; Bluetooth detection will not work until one is present."
 fi
 
 # ---------------------------------------------------------------- services
 if have_systemd; then
   say "Installing systemd services"
-  for u in tripline-watcher tripline-web tripline-sync; do
+  for u in tripline-watcher tripline-web tripline-sync tripline-tpms; do
     sed -e "s|^User=.*|User=$SVC_USER|" \
         -e "s|/etc/tripline/config.ini|$CFG|g" \
         -e "s|/opt/tripline|$PREFIX|g" "$SRC/systemd/$u.service" >"$UNIT_DIR/$u.service"
@@ -249,6 +323,7 @@ if have_systemd; then
   systemctl daemon-reload
   UNITS="tripline-watcher tripline-web"
   [ "$DO_KISMET" = 1 ] && UNITS="kismet $UNITS"
+  [ "$SDR" = 1 ] && UNITS="$UNITS tripline-tpms"
   # shellcheck disable=SC2086
   systemctl enable --now $UNITS
   sleep 2

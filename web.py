@@ -368,6 +368,30 @@ def api_networks_del():
     return jsonify({"ok": True})
 
 
+@app.get("/api/vehicles")
+def api_vehicles():
+    db = get_db()
+    rows = db.execute("SELECT vid,model,sensor_id,first_seen,last_seen,seen_count,known,label,last_rssi,"
+                      "last_freq FROM vehicles ORDER BY last_seen DESC LIMIT 200").fetchall()
+    return jsonify({"enabled": cfg().getboolean("vehicles", "enabled", fallback=False),
+                    "vehicles": [dict(r) for r in rows]})
+
+
+@app.post("/api/vehicles/known")
+def api_vehicles_known():
+    b = body()
+    vid = str(b.get("vid", ""))[:100]
+    known = 1 if b.get("known", True) else 0
+    label = (str(b.get("label", "")).strip()[:40]) or None
+    db = get_db()
+    cur = db.execute("UPDATE vehicles SET known=?, label=? WHERE vid=?",
+                     (known, label if known else None, vid))
+    db.commit()
+    if not cur.rowcount:
+        return jsonify({"error": "unknown vehicle"}), 404
+    return jsonify({"ok": True})
+
+
 def main():
     c = cfg()
     bind = c.get("web", "bind", fallback="127.0.0.1")
