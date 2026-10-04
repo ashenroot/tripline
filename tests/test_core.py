@@ -140,3 +140,26 @@ class Notify(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MacCaseMigration(unittest.TestCase):
+    def test_old_uppercase_rows_are_merged(self):
+        tmp = tmpdir()
+        self.addCleanup(tmp.cleanup)
+        cfg = make_cfg(tmp.name)
+        db = watcher.db_connect(cfg)
+        db.execute("INSERT INTO devices(mac,phy,rand,first_seen,last_seen,max_rssi,seen_count,known) "
+                   "VALUES('AA:BB:CC:00:00:01','x',0,10,20,-50,3,0)")
+        db.execute("INSERT INTO devices(mac,phy,rand,first_seen,last_seen,max_rssi,seen_count,known,label) "
+                   "VALUES('aa:bb:cc:00:00:01','',0,15,15,0,0,1,'Mine')")
+        db.execute("INSERT INTO devices(mac,phy,rand,first_seen,last_seen,max_rssi,seen_count,known) "
+                   "VALUES('AA:BB:CC:00:00:02','x',0,10,20,-50,1,0)")
+        db.execute("INSERT INTO sightings VALUES(1,'AA:BB:CC:00:00:01','x',-50,0)")
+        db.execute("DELETE FROM meta WHERE k='mac_case_v1'")
+        db.commit()
+        watcher._lowercase_macs(db)
+        rows = db.execute("SELECT mac,known,label,seen_count,first_seen FROM devices ORDER BY mac").fetchall()
+        self.assertEqual([tuple(r) for r in rows], [("aa:bb:cc:00:00:01", 1, "Mine", 3, 10),
+                                                    ("aa:bb:cc:00:00:02", 0, None, 1, 10)])
+        self.assertEqual(db.execute("SELECT mac FROM sightings").fetchone()[0], "aa:bb:cc:00:00:01")
+        db.close()

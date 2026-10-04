@@ -106,6 +106,11 @@ td input{width:150px}
 .pair .arrow{color:var(--accent);font-size:18px}
 @media (max-width:640px){.pair{grid-template-columns:1fr}.pair .arrow{display:none}}
 dialog{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:18px;max-width:420px;width:calc(100% - 32px)}
+#dev-dlg,#alert-dlg{max-width:560px;max-height:calc(100vh - 40px);overflow:auto}
+.tile.click{cursor:pointer}.tile.click:hover,.tile.click:focus-visible{border-color:var(--accent);outline:none}
+#view-dev tbody tr.dev-row{cursor:pointer}#view-dev tbody tr.dev-row:hover{background:rgba(125,146,168,.08)}
+.hbars{display:flex;align-items:flex-end;gap:2px;height:36px;margin-top:6px}
+.hbars i{flex:1;background:var(--accent);min-height:1px;border-radius:2px;opacity:.85}
 dialog::backdrop{background:rgba(0,0,0,.6)}
 dialog label{display:block;margin-top:10px;font-size:12px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase}
 dialog input,dialog select{width:100%;margin-top:4px}
@@ -168,10 +173,10 @@ dialog input,dialog select{width:100%;margin-top:4px}
 
   <div class="col">
     <div class="tiles">
-      <div class="tile"><div class="k">Mode</div><div class="v" id="v-mode">-</div><div class="s" id="s-mode"></div><div class="bar hidden" id="b-learn"><div class="fill" id="f-learn" style="width:0"></div></div></div>
-      <div class="tile"><div class="k">Unknown nearby</div><div class="v" id="v-unk">-</div><div class="s" id="s-unk"></div></div>
-      <div class="tile"><div class="k">Rotating devices</div><div class="v c-blue" id="v-rand">-</div><div class="s" id="s-rand"></div><div class="bar"><div class="fill" id="f-rand" style="width:0"></div><div class="mark hidden" id="m-rand"></div></div></div>
-      <div class="tile"><div class="k">Alerts 24h</div><div class="v" id="v-alerts">-</div><div class="s" id="s-alerts"></div></div>
+      <div class="tile click" id="t-mode" tabindex="0" role="button" title="Go to the controls"><div class="k">Mode</div><div class="v" id="v-mode">-</div><div class="s" id="s-mode"></div><div class="bar hidden" id="b-learn"><div class="fill" id="f-learn" style="width:0"></div></div></div>
+      <div class="tile click" id="t-unk" tabindex="0" role="button" title="Show these devices"><div class="k">Unknown nearby</div><div class="v" id="v-unk">-</div><div class="s" id="s-unk"></div></div>
+      <div class="tile click" id="t-rand" tabindex="0" role="button" title="Show these devices"><div class="k">Rotating devices</div><div class="v c-blue" id="v-rand">-</div><div class="s" id="s-rand"></div><div class="bar"><div class="fill" id="f-rand" style="width:0"></div><div class="mark hidden" id="m-rand"></div></div></div>
+      <div class="tile click" id="t-alerts" tabindex="0" role="button" title="Show these alerts"><div class="k">Alerts 24h</div><div class="v" id="v-alerts">-</div><div class="s" id="s-alerts"></div></div>
     </div>
 
     <div class="card">
@@ -238,6 +243,8 @@ dialog input,dialog select{width:100%;margin-top:4px}
       <option value="known">Known</option>
       <option value="random">Rotating address</option>
       <option value="all">All</option>
+      <option value="unknown_now">Unknown nearby now</option>
+      <option value="rotating_now">Rotating nearby now</option>
     </select>
     <select id="dev-radio" aria-label="Radio">
       <option value="">Wi-Fi and Bluetooth</option>
@@ -274,6 +281,17 @@ dialog input,dialog select{width:100%;margin-top:4px}
 </main>
 
 <div class="toast hidden" id="toast" role="status"></div>
+
+<dialog id="dev-dlg">
+  <div id="dev-detail"></div>
+  <div class="row" style="margin-top:16px;justify-content:flex-end"><button class="btn" id="dev-close">Close</button></div>
+</dialog>
+
+<dialog id="alert-dlg">
+  <h2 style="margin:0 0 8px">Alerts, last 24 hours</h2>
+  <div id="alert-list"></div>
+  <div class="row" style="margin-top:16px;justify-content:flex-end"><button class="btn" id="alert-close">Close</button></div>
+</dialog>
 
 <dialog id="link-dlg">
   <form method="dialog" id="link-form">
@@ -711,11 +729,12 @@ function updateSelLive() {
   if (selLive.rssi) selLive.rssi.textContent = d ? d.rssi + ' dBm' : 'out of range';
   if (selLive.age) selLive.age.textContent = d ? rel(d.age) + ' ago' : 'not in last 5 min';
 }
-async function loadSpark() {
-  if (!selected) return;
+async function loadSpark(mac, canvas) {
+  mac = mac || (selected && selected.mac);
+  if (!mac) return;
   try {
-    const h = await api('/api/history/' + encodeURIComponent(selected.mac) + '?minutes=60');
-    const c = $('#spark'); if (!c) return;
+    const h = await api('/api/history/' + encodeURIComponent(mac) + '?minutes=60');
+    const c = canvas || $('#spark'); if (!c) return;
     const dpr = window.devicePixelRatio || 1, r = c.getBoundingClientRect();
     c.width = Math.round(r.width * dpr); c.height = Math.round(r.height * dpr);
     const x = c.getContext('2d'); x.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1078,7 +1097,8 @@ async function loadDevices() {
   $('#dev-count').textContent = d.devices.length + (d.devices.length === 300 ? '+' : '') + ' devices';
   const now = Date.now() / 1000;
   for (const x of d.devices) {
-    const tr = el('tr');
+    const tr = el('tr', 'dev-row');
+    tr.onclick = ev => { if (!ev.target.closest('button,input,a')) openDevice(x.mac); };
     const c1 = el('td'); c1.appendChild(el('div', null, x.label || x.name || x.manuf || '-')); c1.appendChild(el('div', 'mono dim', x.mac));
     tr.appendChild(c1);
     const ctype = el('td', null, radioName(x.phy));
@@ -1125,6 +1145,81 @@ async function loadDevices() {
     doAct(bulk, async () => { await post('/api/known/bulk', { macs: d.devices.map(x => x.mac) }); await loadDevices(); });
   };
 }
+/* ---------- device detail ---------- */
+const absTime = ts => ts ? new Date(ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
+async function openDevice(mac) {
+  let d; try { d = await api('/api/device/' + encodeURIComponent(mac)); } catch (e) { toast('Could not load that device.'); return; }
+  const box = $('#dev-detail'); box.replaceChildren();
+  const head = el('div', 'row');
+  head.appendChild(el('strong', null, d.label || d.name || d.manuf || (d.rand ? 'Rotating address' : 'Unknown vendor')));
+  head.appendChild(el('span', 'pill', d.rand ? 'rotating' : d.known ? 'known' : 'unknown'));
+  if (d.ap && d.ap.mine) head.appendChild(el('span', 'pill', 'on my network'));
+  box.appendChild(head);
+  const g = el('div', 'kv'); g.style.marginTop = '8px';
+  const row = (k, v) => { g.appendChild(el('span', null, k)); g.appendChild(el('span', null, v)); };
+  row('MAC', d.mac); row('Radio', radioName(d.phy)); row('Vendor', d.manuf || '-');
+  if (d.name) row('Broadcast name', d.name);
+  row('First seen', absTime(d.first_seen)); row('Last seen', absTime(d.last_seen) + ' (' + rel(d.now - d.last_seen) + ' ago)');
+  row('Peak signal', d.max_rssi ? d.max_rssi + ' dBm' : '-'); row('Sightings', String(d.seen_count));
+  const hr = d.hour;
+  row('Last hour', hr.sightings ? hr.sightings + ' sightings, avg ' + hr.avg_rssi + ' dBm (' + hr.min_rssi + ' to ' + hr.max_rssi + ')' : 'not heard');
+  if (d.ap) row('Connected to', d.ap.bssid + (d.ap.label ? ' (' + d.ap.label + ')' : d.ap.manuf ? ' (' + d.ap.manuf + ')' : '') + (d.ap.mine ? ', mine' : ', not in My networks'));
+  else if (/802\.11/.test(d.phy || '')) row('Connected to', 'nothing seen (not associated, or no data traffic heard)');
+  if (d.entity) row('Entity', d.entity.name + ' (' + d.entity.kind + ')');
+  box.appendChild(g);
+  box.appendChild(el('div', 'dim', 'Sightings per hour, last 24 h'));
+  const bars = el('div', 'hbars'); const mx = Math.max(1, ...d.hourly);
+  d.hourly.forEach((n, i) => { const b = el('i'); b.style.height = Math.max(2, n / mx * 100) + '%'; b.title = (24 - i) + 'h ago: ' + n; bars.appendChild(b); });
+  box.appendChild(bars);
+  const spark = el('canvas'); box.appendChild(spark);
+  if (d.probes.length) {
+    box.appendChild(el('div', 'dim', 'Network names it has asked for (' + d.probes.length + ')'));
+    const ul = el('div', 'mono'); ul.style.cssText = 'font-size:12px;margin-top:4px;overflow-wrap:anywhere';
+    for (const p of d.probes) ul.appendChild(el('div', null, p.ssid + '  \u00B7 last ' + absTime(p.last_seen)));
+    box.appendChild(ul);
+  }
+  if (d.alerts.length) {
+    box.appendChild(el('div', 'dim', 'Alerts that mention it'));
+    for (const a of d.alerts) box.appendChild(el('div', null, absTime(a.ts) + '  ' + a.title));
+  }
+  const acts = el('div', 'row'); acts.style.marginTop = '12px';
+  const inp = el('input'); inp.type = 'text'; inp.maxLength = 40; inp.placeholder = 'label'; inp.value = d.label || '';
+  const mk = el('button', 'btn ' + (d.known ? 'danger' : 'primary'), d.known ? 'Unmark' : 'Mark known');
+  mk.onclick = () => doAct(mk, async () => {
+    if (d.known) await post('/api/known/delete', { mac: d.mac }); else await post('/api/known', { mac: d.mac, label: inp.value });
+    $('#dev-dlg').close(); loadDevices();
+  });
+  const lk = el('button', 'btn', 'Link');
+  lk.onclick = () => { $('#dev-dlg').close(); openLink('device', d.mac, d.label || d.name || d.manuf || d.mac); };
+  acts.appendChild(inp); acts.appendChild(mk); acts.appendChild(lk);
+  box.appendChild(acts);
+  if (!$('#dev-dlg').open) $('#dev-dlg').showModal();
+  loadSpark(d.mac, spark);
+}
+$('#dev-close').onclick = () => $('#dev-dlg').close();
+$('#alert-close').onclick = () => $('#alert-dlg').close();
+
+/* ---------- tiles drill down ---------- */
+function showDevices(filter) {
+  setTab('dev'); $('#dev-filter').value = filter; $('#dev-radio').value = ''; $('#dev-q').value = ''; loadDevices();
+}
+async function openAlerts() {
+  let d; try { d = await api('/api/alerts?hours=24'); } catch (e) { toast('Could not load alerts.'); return; }
+  const box = $('#alert-list'); box.replaceChildren();
+  if (!d.alerts.length) box.appendChild(el('div', 'dim', 'No alerts in the last 24 hours.'));
+  for (const a of d.alerts) {
+    const r = el('div'); r.style.cssText = 'padding:8px 0;border-top:1px solid var(--line)';
+    r.appendChild(el('div', null, absTime(a.ts) + '  ' + a.title));
+    r.appendChild(el('div', 'dim', a.message)); box.appendChild(r);
+  }
+  $('#alert-dlg').showModal();
+}
+const tileKey = (id, fn) => { const t = $(id); t.onclick = fn; t.onkeydown = ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); fn(); } }; };
+tileKey('#t-unk', () => showDevices('unknown_now'));
+tileKey('#t-rand', () => showDevices('rotating_now'));
+tileKey('#t-alerts', openAlerts);
+tileKey('#t-mode', () => $('#m-home').scrollIntoView({ behavior: 'smooth', block: 'center' }));
+
 $('#dev-filter').onchange = loadDevices;
 $('#dev-radio').onchange = loadDevices;
 $('#dev-q').oninput = () => { clearTimeout(devTimer); devTimer = setTimeout(loadDevices, 300); };

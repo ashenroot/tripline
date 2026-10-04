@@ -255,8 +255,17 @@ def api_devices():
     db = get_db()
     flt = request.args.get("filter", "unknown")
     q = request.args.get("q", "").strip().lower()
+    now = int(time.time())
+    c = cfg()
     where = {"unknown": "known=0 AND rand=0", "known": "known=1",
-             "random": "rand=1", "all": "1=1"}.get(flt, "known=0 AND rand=0")
+             "random": "rand=1", "all": "1=1",
+             # the lists behind the dashboard tiles use the same rules as the tile counts
+             "unknown_now": "known=0 AND mac IN (SELECT mac FROM sightings WHERE ts>=%d AND rand=0)" % (now - 60),
+             "rotating_now": "mac IN (SELECT mac FROM sightings WHERE ts>=%d AND rand=1 AND "
+                             "((phy LIKE '%%luetooth%%' AND rssi>=%d) OR (phy NOT LIKE '%%luetooth%%' AND rssi>=%d)))"
+                             % (now - c.getint("detect", "random_window_seconds"),
+                                c.getint("detect", "bt_rssi"), c.getint("detect", "wifi_rssi")),
+             }.get(flt, "known=0 AND rand=0")
     sql = ("SELECT mac,phy,manuf,name,rand,known,label,first_seen,last_seen,max_rssi,"
            "seen_count,(SELECT COUNT(*) FROM probes p WHERE p.mac=devices.mac) AS probe_count,"
            "(SELECT group_concat(ssid, char(10)) FROM (SELECT ssid FROM probes p WHERE p.mac=devices.mac "
@@ -280,6 +289,56 @@ def api_devices():
     direction = "ASC" if request.args.get("dir") == "asc" else "DESC"
     sql += f" ORDER BY {col} {direction}, mac LIMIT 300"
     return jsonify({"devices": [dict(r) for r in db.execute(sql, args)]})
+
+
+@app.get("/api/alerts")
+def api_alerts():
+    hours = max(1, min(int(request.args.get("hours", 24)), 720))
+    rows = get_db().execute("SELECT ts,title,message,priority FROM alerts WHERE ts>=? ORDER BY ts DESC LIMIT 200",
+                            (int(time.time()) - hours * 3600,)).fetchall()
+    return jsonify({"alerts": [dict(r) for r in rows]})
+
+
+@app.get("/api/device/<mac>")
+def api_device(mac):
+    """Everything known about one device, for the detail panel."""
+    mac = mac.lower()
+    if not MAC_RE.match(mac):
+        return jsonify({"error": "bad mac"}), 400
+    db, now = get_db(), int(time.time())
+    d = db.execute("SELECT * FROM devices WHERE mac=?", (mac,)).fetchone()
+    if d is None:
+        return jsonify({"error": "unknown device"}), 404
+    out = {k: d[k] for k in d.keys()}
+    out["probes"] = [dict(r) for r in db.execute(
+        "SELECT ssid,first_seen,last_seen FROM probes WHERE mac=? ORDER BY last_seen DESC LIMIT 100", (mac,))]
+    ap = None
+    if d["bssid"]:
+        net = db.execute("SELECT label FROM networks WHERE bssid=?", (d["bssid"],)).fetchone()
+        apd = db.execute("SELECT manuf,name,label FROM devices WHERE mac=?", (d["bssid"],)).fetchone()
+        home = watcher.home_set(cfg(), db)
+        ap = {"bssid": d["bssid"], "mine": watcher.in_home(d["bssid"], home),
+              "listed": bool(net), "label": (net[0] if net else None) or (apd["label"] if apd else None),
+              "manuf": apd["manuf"] if apd else None, "name": apd["name"] if apd else None}
+    out["ap"] = ap
+    ent = db.execute("SELECT e.id,e.name,e.kind,e.known FROM entity_members m JOIN entities e ON e.id=m.entity_id "
+                     "WHERE m.kind='device' AND m.ref=?", (mac,)).fetchone()
+    out["entity"] = dict(ent) if ent else None
+    hrs = [0] * 24
+    for b, n in db.execute("SELECT CAST((?-ts)/3600 AS INTEGER), COUNT(*) FROM sightings "
+                           "WHERE mac=? AND ts>=? GROUP BY 1", (now, mac, now - 86400)):
+        if 0 <= b < 24:
+            hrs[b] = n
+    out["hourly"] = hrs[::-1]   # oldest first
+    r = db.execute("SELECT COUNT(*), AVG(rssi), MAX(rssi), MIN(rssi) FROM sightings WHERE mac=? AND ts>=?",
+                   (mac, now - 3600)).fetchone()
+    out["hour"] = {"sightings": r[0], "avg_rssi": round(r[1]) if r[1] is not None else None,
+                   "max_rssi": r[2], "min_rssi": r[3]}
+    out["alerts"] = [dict(a) for a in db.execute(
+        "SELECT ts,title,message FROM alerts WHERE message LIKE ? OR title LIKE ? ORDER BY ts DESC LIMIT 5",
+        (f"%{mac}%", f"%{mac}%"))]
+    out["now"] = now
+    return jsonify(out)
 
 
 @app.get("/api/history/<mac>")

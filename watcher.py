@@ -101,12 +101,46 @@ def db_connect(cfg):
     # Who made a device known: NULL (you, home_bssids or arm), 'unifi', or 'unmarked'
     # (you removed it by hand, so automatic sources leave it alone).
     cols = {r[1] for r in db.execute("PRAGMA table_info(devices)")}
-    for col, ddl in (("src", "TEXT"), ("synced_at", "INTEGER")):
+    for col, ddl in (("src", "TEXT"), ("synced_at", "INTEGER"), ("bssid", "TEXT")):
         if col not in cols:
             db.execute(f"ALTER TABLE devices ADD COLUMN {col} {ddl}")
     db.commit()
+    _lowercase_macs(db)
     _schema_ready.add(path)
     return db
+
+
+def _lowercase_macs(db):
+    """Kismet reports upper-case MACs while the web UI sends lower-case ones, which split one device
+    into two rows (so Mark known changed a copy). Store every MAC lower-case and merge old duplicates."""
+    if db.execute("SELECT v FROM meta WHERE k='mac_case_v1'").fetchone():
+        return
+    for (mac,) in db.execute("SELECT mac FROM devices WHERE mac != LOWER(mac)").fetchall():
+        low = mac.lower()
+        twin = db.execute("SELECT 1 FROM devices WHERE mac=?", (low,)).fetchone()
+        if twin:
+            db.execute(
+                "UPDATE devices SET known=MAX(known,(SELECT known FROM devices WHERE mac=?)), "
+                "label=COALESCE(label,(SELECT label FROM devices WHERE mac=?)), "
+                "src=COALESCE(src,(SELECT src FROM devices WHERE mac=?)), "
+                "first_seen=MIN(first_seen,(SELECT first_seen FROM devices WHERE mac=?)), "
+                "last_seen=MAX(last_seen,(SELECT last_seen FROM devices WHERE mac=?)), "
+                "max_rssi=MAX(max_rssi,(SELECT max_rssi FROM devices WHERE mac=?)), "
+                "seen_count=seen_count+(SELECT seen_count FROM devices WHERE mac=?) WHERE mac=?",
+                (mac,) * 7 + (low,))
+            db.execute("DELETE FROM devices WHERE mac=?", (mac,))
+        else:
+            db.execute("UPDATE devices SET mac=? WHERE mac=?", (low, mac))
+    db.execute("UPDATE sightings SET mac=LOWER(mac) WHERE mac != LOWER(mac)")
+    db.execute("UPDATE OR IGNORE probes SET mac=LOWER(mac) WHERE mac != LOWER(mac)")
+    db.execute("DELETE FROM probes WHERE mac != LOWER(mac)")
+    db.execute("UPDATE OR IGNORE presence SET ref='device:'||LOWER(SUBSTR(ref,8)) "
+               "WHERE ref LIKE 'device:%' AND ref != LOWER(ref)")
+    db.execute("DELETE FROM presence WHERE ref LIKE 'device:%' AND ref != LOWER(ref)")
+    db.execute("UPDATE OR IGNORE entity_members SET ref=LOWER(ref) WHERE kind='device' AND ref != LOWER(ref)")
+    db.execute("DELETE FROM entity_members WHERE kind='device' AND ref != LOWER(ref)")
+    db.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('mac_case_v1','1')")
+    db.commit()
 
 
 def meta_get(db, key, default=None):
@@ -260,10 +294,12 @@ def ingest(db, d, now, home=frozenset(), home_ssids=frozenset()):
     probes for one of your own SSIDs (`home_ssids`, case-folded): it is treated as yours.
     Every probed SSID is recorded for link suggestions.
     """
-    mac = d.get("kismet.device.base.macaddr")
+    mac = (d.get("kismet.device.base.macaddr") or "").lower()
     rssi = d.get("rssi")
     if not mac or not isinstance(rssi, int) or rssi == 0:
         return None
+    ap = (d.get("bssid") or "").lower()
+    ap = ap if ap and ap != "00:00:00:00:00:00" and ap != mac else None
     phy = d.get("kismet.device.base.phyname") or ""
     manuf = d.get("kismet.device.base.manuf") or ""
     name = d.get("kismet.device.base.name") or ""
@@ -286,6 +322,8 @@ def ingest(db, d, now, home=frozenset(), home_ssids=frozenset()):
         "rand=MIN(rand, excluded.rand), "
         "known=CASE WHEN src='unmarked' THEN known ELSE MAX(known, excluded.known) END",
         (mac, phy, manuf, name, rand, now, now, rssi, at_home))
+    if ap:
+        db.execute("UPDATE devices SET bssid=? WHERE mac=?", (ap, mac))
     known = db.execute("SELECT known FROM devices WHERE mac=?", (mac,)).fetchone()[0]
     return mac, phy, manuf, rssi, rand, known
 

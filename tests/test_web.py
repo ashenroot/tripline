@@ -52,6 +52,42 @@ class Api(WebBase):
         self.assertEqual(get("sort=last_seen&dir=desc")[0], "11:22:33:44:55:66")
         self.assertEqual(self.client.get("/api/devices?sort=1;DROP").status_code, 200)
 
+    def test_uppercase_kismet_mac_is_one_device_and_mark_known_sticks(self):
+        d = {"kismet.device.base.macaddr": "00:10:20:30:40:5A", "kismet.device.base.phyname": "IEEE802.11",
+             "kismet.device.base.manuf": "Acme", "kismet.device.base.name": "", "rssi": -50,
+             "bssid": "74:83:C2:24:FE:57"}
+        watcher.ingest(self.db, d, 1000)
+        self.db.commit()
+        self.client.post("/api/known", json={"mac": "00:10:20:30:40:5a"}, headers=H)
+        watcher.ingest(self.db, d, 1100)
+        self.db.commit()
+        rows = self.db.execute("SELECT mac, known, bssid FROM devices").fetchall()
+        self.assertEqual([tuple(r) for r in rows], [("00:10:20:30:40:5a", 1, "74:83:c2:24:fe:57")])
+
+    def test_device_detail(self):
+        self.add("00:10:20:30:40:50", label="Cam")
+        watcher.ingest(self.db, {"kismet.device.base.macaddr": "00:10:20:30:40:50",
+                                 "kismet.device.base.phyname": "IEEE802.11", "rssi": -61,
+                                 "probes": {"1": {"dot11.probedssid.ssid": "Cabin"}}}, int(__import__("time").time()))
+        self.db.commit()
+        r = self.client.get("/api/device/00:10:20:30:40:50").get_json()
+        self.assertEqual(r["label"], "Cam")
+        self.assertEqual([p["ssid"] for p in r["probes"]], ["Cabin"])
+        self.assertEqual(len(r["hourly"]), 24)
+        self.assertEqual(self.client.get("/api/device/00:00:00:00:00:99").status_code, 404)
+        self.assertEqual(self.client.get("/api/device/nope").status_code, 400)
+
+    def test_tile_filters_and_alert_list(self):
+        now = int(__import__("time").time())
+        self.add("00:10:20:30:40:50")
+        self.db.execute("INSERT INTO sightings VALUES(?,?,?,?,?)", (now - 5, "00:10:20:30:40:50", "IEEE802.11", -60, 0))
+        self.db.execute("INSERT INTO alerts VALUES(?,?,?,?)", (now - 5, "Unknown device", "x", "default"))
+        self.db.commit()
+        got = self.client.get("/api/devices?filter=unknown_now").get_json()["devices"]
+        self.assertEqual([d["mac"] for d in got], ["00:10:20:30:40:50"])
+        self.assertEqual(self.client.get("/api/devices?filter=rotating_now").get_json()["devices"], [])
+        self.assertEqual(len(self.client.get("/api/alerts").get_json()["alerts"]), 1)
+
     def test_security_headers(self):
         r = self.client.get("/")
         self.assertEqual(r.headers["X-Frame-Options"], "DENY")
