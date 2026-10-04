@@ -40,6 +40,18 @@ class Api(WebBase):
         for p in ("/", "/api/state", "/api/radar", "/api/signals", "/api/activity", "/api/feed", "/api/devices"):
             self.assertEqual(self.client.get(p).status_code, 200, p)
 
+    def test_devices_radio_filter_and_sort(self):
+        self.add("00:10:20:30:40:50")
+        self.db.execute("INSERT INTO devices(mac,phy,rand,first_seen,last_seen,max_rssi,known,name) "
+                        "VALUES('11:22:33:44:55:66','Bluetooth',0,1,5,-70,0,'Watch')")
+        self.db.commit()
+        get = lambda q: [d["mac"] for d in self.client.get("/api/devices?filter=all&" + q).get_json()["devices"]]
+        self.assertEqual(get("radio=bt"), ["11:22:33:44:55:66"])
+        self.assertEqual(get("radio=wifi"), ["00:10:20:30:40:50"])
+        self.assertEqual(get("sort=last_seen&dir=asc")[0], "00:10:20:30:40:50")
+        self.assertEqual(get("sort=last_seen&dir=desc")[0], "11:22:33:44:55:66")
+        self.assertEqual(self.client.get("/api/devices?sort=1;DROP").status_code, 200)
+
     def test_security_headers(self):
         r = self.client.get("/")
         self.assertEqual(r.headers["X-Frame-Options"], "DENY")

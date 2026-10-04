@@ -239,13 +239,18 @@ dialog input,dialog select{width:100%;margin-top:4px}
       <option value="random">Rotating address</option>
       <option value="all">All</option>
     </select>
+    <select id="dev-radio" aria-label="Radio">
+      <option value="">Wi-Fi and Bluetooth</option>
+      <option value="wifi">Wi-Fi only</option>
+      <option value="bt">Bluetooth only</option>
+    </select>
     <input type="search" id="dev-q" placeholder="Search MAC, vendor, label" aria-label="Search">
     <span class="dim" id="dev-count"></span>
     <button class="btn primary hidden" id="dev-bulk">Mark all shown as known</button>
   </div>
   <div class="tablewrap" style="margin-top:10px">
     <table>
-      <thead><tr><th>Device</th><th>Type</th><th>Last seen</th><th>Peak</th><th>Seen</th><th>Label</th><th></th></tr></thead>
+      <thead><tr><th data-sort="name">Device</th><th>Type</th><th data-sort="last_seen">Last seen</th><th data-sort="rssi">Peak</th><th data-sort="seen">Seen</th><th>Label</th><th></th></tr></thead>
       <tbody id="dev-body"></tbody>
     </table>
   </div>
@@ -1045,10 +1050,30 @@ $('#net-add').onclick = async () => {
 
 /* ---------- devices tab ---------- */
 let devTimer = null;
+let devSort = { col: 'last_seen', dir: 'desc' };
+const radioName = p => /802\.11/.test(p || '') ? 'Wi-Fi' : /bluetooth|btle/i.test(p || '') ? 'Bluetooth' : (p || '-');
+function syncSortHeads() {
+  document.querySelectorAll('th[data-sort]').forEach(th => {
+    th.style.cursor = 'pointer';
+    th.dataset.arrow = th.dataset.sort === devSort.col ? (devSort.dir === 'asc' ? ' \u25B2' : ' \u25BC') : '';
+    th.textContent = th.textContent.replace(/ [\u25B2\u25BC]$/, '') + th.dataset.arrow;
+  });
+}
+document.querySelectorAll('th[data-sort]').forEach(th => {
+  th.onclick = () => {
+    const c = th.dataset.sort;
+    devSort = { col: c, dir: devSort.col === c && devSort.dir === 'desc' ? 'asc' : 'desc' };
+    loadDevices();
+  };
+});
 async function loadDevices() {
-  const f = $('#dev-filter').value, q = $('#dev-q').value;
+  const f = $('#dev-filter').value, q = $('#dev-q').value, radio = $('#dev-radio').value;
   let d;
-  try { d = await api('/api/devices?filter=' + encodeURIComponent(f) + '&q=' + encodeURIComponent(q)); } catch (e) { return; }
+  try {
+    d = await api('/api/devices?filter=' + encodeURIComponent(f) + '&q=' + encodeURIComponent(q)
+      + '&radio=' + radio + '&sort=' + devSort.col + '&dir=' + devSort.dir);
+  } catch (e) { return; }
+  syncSortHeads();
   const body = $('#dev-body'); body.replaceChildren();
   $('#dev-count').textContent = d.devices.length + (d.devices.length === 300 ? '+' : '') + ' devices';
   const now = Date.now() / 1000;
@@ -1056,7 +1081,8 @@ async function loadDevices() {
     const tr = el('tr');
     const c1 = el('td'); c1.appendChild(el('div', null, x.label || x.name || x.manuf || '-')); c1.appendChild(el('div', 'mono dim', x.mac));
     tr.appendChild(c1);
-    const ctype = el('td', null, x.phy || '-');
+    const ctype = el('td', null, radioName(x.phy));
+    if (x.rand) ctype.appendChild(el('div', 'dim', 'rotating'));
     if (x.probe_count) { const pd = el('div', 'dim', x.probe_count + ' SSID' + (x.probe_count > 1 ? 's' : '')); pd.title = x.probe_list || ''; ctype.appendChild(pd); }
     if (x.entity_id) ctype.appendChild(el('div', 'dim', 'linked'));
     tr.appendChild(ctype);
@@ -1082,8 +1108,9 @@ async function loadDevices() {
       });
       c7.appendChild(nb);
     }
-    if (!x.rand) {
-      const lb = el('button', 'btn', 'Link'); lb.style.marginLeft = '6px'; lb.title = 'Add to a person or household';
+    {
+      const lb = el('button', 'btn', 'Link'); lb.style.marginLeft = '6px';
+      lb.title = x.rand ? 'Add to a person or household. This address rotates, so link the stable signals (wearable, TPMS) for lasting results' : 'Add to a person or household';
       lb.onclick = () => openLink('device', x.mac, x.label || x.name || x.manuf || x.mac);
       c7.appendChild(lb);
     }
@@ -1099,6 +1126,7 @@ async function loadDevices() {
   };
 }
 $('#dev-filter').onchange = loadDevices;
+$('#dev-radio').onchange = loadDevices;
 $('#dev-q').oninput = () => { clearTimeout(devTimer); devTimer = setTimeout(loadDevices, 300); };
 
 $('#reset-btn').onclick = () => {

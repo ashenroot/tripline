@@ -265,11 +265,20 @@ def api_devices():
            "EXISTS(SELECT 1 FROM networks n WHERE n.bssid=devices.mac) AS is_network "
            f"FROM devices WHERE {where}")
     args = []
+    radio = request.args.get("radio", "")
+    if radio == "wifi":
+        sql += " AND phy LIKE '%802.11%'"
+    elif radio == "bt":
+        sql += " AND (LOWER(phy) LIKE '%bluetooth%' OR LOWER(phy) LIKE '%btle%')"
     if q:
         sql += " AND (mac LIKE ? OR LOWER(COALESCE(manuf,'')) LIKE ? OR " \
                "LOWER(COALESCE(label,'')) LIKE ? OR LOWER(COALESCE(name,'')) LIKE ?)"
         args = [f"%{q}%"] * 4
-    sql += " ORDER BY last_seen DESC LIMIT 300"
+    col = {"last_seen": "last_seen", "first_seen": "first_seen", "rssi": "max_rssi", "seen": "seen_count",
+           "name": "LOWER(COALESCE(NULLIF(label,''), NULLIF(name,''), manuf, ''))",
+           "mac": "mac"}.get(request.args.get("sort", ""), "last_seen")
+    direction = "ASC" if request.args.get("dir") == "asc" else "DESC"
+    sql += f" ORDER BY {col} {direction}, mac LIMIT 300"
     return jsonify({"devices": [dict(r) for r in db.execute(sql, args)]})
 
 
