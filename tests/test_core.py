@@ -182,3 +182,15 @@ class MacCaseMigration(unittest.TestCase):
                                                     ("aa:bb:cc:00:00:02", 0, None, 1, 10)])
         self.assertEqual(db.execute("SELECT mac FROM sightings").fetchone()[0], "aa:bb:cc:00:00:01")
         db.close()
+
+
+class InstallerCopiesEveryModule(unittest.TestCase):
+    def test_every_top_level_module_is_in_install_sh(self):
+        import glob
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "install.sh"), encoding="utf-8") as fh:
+            script = fh.read()
+        mods = [os.path.basename(p) for p in glob.glob(os.path.join(root, "*.py"))]
+        missing = [m for m in mods if m not in script]
+        self.assertEqual(missing, [], "install.sh does not copy: %s" % missing)

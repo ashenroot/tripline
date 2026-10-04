@@ -213,7 +213,7 @@ if [ "$(realpath "$SRC")" = "$(realpath -m "$PREFIX")" ]; then
 else
   say "Installing code to $PREFIX"
   install -d "$PREFIX" "$PREFIX/sources"
-  install -m 0644 "$SRC"/watcher.py "$SRC"/web.py "$SRC"/known_sync.py "$SRC"/tpms.py "$SRC"/identity.py "$SRC"/dashboard.html "$PREFIX"/
+  install -m 0644 "$SRC"/watcher.py "$SRC"/web.py "$SRC"/known_sync.py "$SRC"/tpms.py "$SRC"/identity.py "$SRC"/insight.py "$SRC"/dashboard.html "$PREFIX"/
   install -m 0644 "$SRC"/sources/*.py "$PREFIX/sources/"
 fi
 
