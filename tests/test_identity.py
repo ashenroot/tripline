@@ -493,3 +493,47 @@ class Doctor(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Insight(unittest.TestCase):
+    def test_harvest_and_merge(self):
+        import insight
+        d = {"type": "Wi-Fi AP", "channel": "6", "fp_probe": 123, "clients": {"AA:BB:CC:00:00:01": 1},
+             "ap_ssids": {"1": {"dot11.advertisedssid.ssid": "Home", "dot11.advertisedssid.crypt_string": "WPA2"}},
+             "bss_ts": 7200000000}
+        h = insight.harvest(d)
+        self.assertEqual(h["clients"], ["aa:bb:cc:00:00:01"])
+        self.assertEqual(h["ssids"][0]["ssid"], "Home")
+        self.assertEqual(h["uptime_s"], 7200)
+        m = insight.merge_extra(h, {"channels": ["11"]})
+        self.assertEqual(m["channels"], ["11", "6"])
+        self.assertEqual(insight.harvest({}), {})
+
+    def test_trend_and_distance(self):
+        import insight
+        up = [[i * 20, -80 + i * 2] for i in range(10)]
+        self.assertEqual(insight.trend(up)["label"], "getting closer")
+        self.assertEqual(insight.trend([[0, -50], [10, -50]])["slope"], None)
+        self.assertEqual(insight.distance(-45, "IEEE802.11"), "under 3 m")
+        self.assertIsNone(insight.distance(0, "x"))
+
+    def test_extras_stored_once_and_entity_pattern(self):
+        import insight
+        t = tmpdir()
+        self.addCleanup(t.cleanup)
+        db = watcher.db_connect(make_cfg(t.name))
+        d = {"kismet.device.base.macaddr": "AA:BB:CC:00:00:09", "kismet.device.base.phyname": "IEEE802.11",
+             "rssi": -50, "channel": "6", "fp_probe": 5}
+        watcher.ingest(db, d, 1000)
+        watcher.ingest(db, dict(d, channel="11"), 1100)
+        db.commit()
+        row = db.execute("SELECT extra FROM devices WHERE mac='aa:bb:cc:00:00:09'").fetchone()[0]
+        self.assertEqual(json.loads(row)["channels"], ["11", "6"])
+        now = 10_000_000
+        b0 = now // 300 - 40
+        for b in (b0, b0 + 1, b0 + 2, b0 + 30):
+            db.execute("INSERT INTO presence VALUES(?,?)", (b, "device:aa:bb:cc:00:00:09"))
+        p = insight.entity_pattern(db, [("device", "aa:bb:cc:00:00:09")], now, 0)
+        self.assertEqual(p["visits"], 2)
+        self.assertEqual(p["avg_minutes"], 10)
+        db.close()

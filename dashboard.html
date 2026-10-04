@@ -995,6 +995,13 @@ async function loadEntities() {
       for (const g of n.signals) sg.appendChild(el('span', 'badge', g.signal + (g.count > 1 ? ' \u00d7' + g.count : '') + (g.last_seen ? ' \u00b7 ' + ago(g.last_seen) : '')));
       card.appendChild(sg);
     }
+    if (n.pattern && n.pattern.visits) {
+      const p = n.pattern;
+      card.appendChild(Object.assign(el('div', 'dim', p.visits + ' visits in ' + p.days + ' days, about ' + p.avg_minutes + ' min each. Last arrived ' + absTime(p.last_arrival) + ', last heard until ' + hhmm(p.last_departure) + '. Arrivals by hour of day:'), { style: 'margin-top:8px' }));
+      card.appendChild(hourBars(p.hours));
+    } else if (n.pattern) {
+      card.appendChild(Object.assign(el('div', 'dim', 'No visits recorded in the last ' + n.pattern.days + ' days.'), { style: 'margin-top:8px' }));
+    }
     const list = el('div'); list.style.marginTop = '8px';
     for (const m of n.members) {
       const r = el('div', 'mem'); r.appendChild(el('span', null, m.label || m.ref));
@@ -1146,6 +1153,11 @@ async function loadDevices() {
   };
 }
 /* ---------- device detail ---------- */
+function hourBars(hours, nowHour) {
+  const bars = el('div', 'hbars'); const mx = Math.max(1, ...hours);
+  hours.forEach((n, i) => { const b = el('i'); b.style.height = Math.max(3, n / mx * 100) + '%'; b.title = pad(i) + ':00  ' + n; if (i === nowHour) b.style.background = 'var(--amber)'; bars.appendChild(b); });
+  return bars;
+}
 const absTime = ts => ts ? new Date(ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
 async function openDevice(mac) {
   let d; try { d = await api('/api/device/' + encodeURIComponent(mac)); } catch (e) { toast('Could not load that device.'); return; }
@@ -1170,8 +1182,38 @@ async function openDevice(mac) {
   row('Address type', (ad.locally_administered ? 'locally administered (private or random address)' : 'globally unique (assigned to the vendor)')
     + (ad.multicast ? ', multicast' : ''));
   row('Vendor prefix', ad.oui);
+  if (d.distance) row('Rough range now', d.distance + ' (very rough, walls and antennas change it)');
+  row('Signal trend', d.trend.label + (d.trend.slope !== null ? ' (' + (d.trend.slope > 0 ? '+' : '') + d.trend.slope + ' dB/min)' : ''));
+  const ex = d.extra || {};
+  if (ex.type) row('Kismet type', ex.type);
+  if (ex.channels && ex.channels.length) row('Channels heard on', ex.channels.join(', '));
+  if (ex.freq) row('Frequency (kHz)', String(ex.freq));
+  if (ex.fp_probe) row('Probe fingerprint', String(ex.fp_probe));
+  if (ex.fp_beacon) row('Beacon fingerprint', String(ex.fp_beacon));
+  if (ex.fp_resp) row('Response fingerprint', String(ex.fp_resp));
+  if (ex.uptime_s) row('AP uptime', rel(ex.uptime_s));
   box.appendChild(g);
   const sec = t => { const e = el('div', 'dim', t); e.style.marginTop = '12px'; box.appendChild(e); };
+  if (d.typical.days >= 1) {
+    sec('Usual hours of day (all history, ' + d.typical.days + ' day' + (d.typical.days > 1 ? 's' : '') + '; amber is now)');
+    box.appendChild(hourBars(d.typical.hours, d.typical.now_hour));
+    if (d.typical.unusual_now) box.appendChild(Object.assign(el('div', null, 'Unusual: this device is rarely heard at this hour.'), { style: 'color:var(--amber);margin-top:4px' }));
+  }
+  if (ex.ssids && ex.ssids.length) {
+    sec('Networks it broadcasts');
+    for (const s of ex.ssids) box.appendChild(el('div', 'mono', [s.ssid || '(hidden)', s.crypt, s.channel ? 'ch ' + s.channel : '', s.wps_manuf, s.wps_model, s.country].filter(Boolean).join('  \u00B7 ')));
+  }
+  if (ex.clients && ex.clients.length) {
+    sec('Clients seen on it (' + ex.clients.length + ')');
+    const cl = el('div', 'mono'); cl.style.cssText = 'font-size:12px;max-height:160px;overflow:auto';
+    for (const c of ex.clients) {
+      const nm = d.client_names && d.client_names[c];
+      const r = el('div', null, c + (nm && nm.title ? '  ' + nm.title : '') + (nm && nm.known ? '  known' : nm ? '' : '  not recorded'));
+      if (nm) { r.style.cursor = 'pointer'; r.onclick = () => openDevice(c); }
+      cl.appendChild(r);
+    }
+    box.appendChild(cl);
+  }
   sec('Days seen, last 14 days (today on the right)');
   const dg = el('div', 'hbars'); dg.style.height = '14px';
   for (let i = 13; i >= 0; i--) { const b = el('i'); b.style.height = d.days_seen.includes(i) ? '100%' : '15%'; b.style.opacity = d.days_seen.includes(i) ? '.9' : '.25'; b.title = i ? i + ' days ago' : 'today'; dg.appendChild(b); }
@@ -1229,6 +1271,12 @@ async function openDevice(mac) {
       const kg = el('div', 'kv'); kg.style.marginTop = '4px';
       for (const k of keys) { kg.appendChild(el('span', null, k)); kg.appendChild(el('span', null, String(l.summary[k]))); }
       live.appendChild(kg);
+    }
+    for (const [grp, rows] of Object.entries(l.groups || {})) {
+      live.appendChild(Object.assign(el('div', 'dim', grp), { style: 'margin-top:12px' }));
+      const gg = el('div', 'kv'); gg.style.marginTop = '4px';
+      for (const [k, v] of rows) { gg.appendChild(el('span', null, k)); gg.appendChild(el('span', null, v)); }
+      live.appendChild(gg);
     }
     const det = el('details'); det.style.marginTop = '10px';
     det.appendChild(el('summary', 'dim', 'Raw Kismet record' + (l.truncated ? ' (truncated)' : '')));

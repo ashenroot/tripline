@@ -25,6 +25,7 @@ def make_cfg(tmp, **overrides):
         cp.write(fh)
     watcher.CFG_PATH = path
     watcher._last_sighting.clear()
+    watcher._extra_cache.clear()
     return cp
 
 

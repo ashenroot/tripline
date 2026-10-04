@@ -24,6 +24,7 @@ import urllib.parse
 import urllib.request
 
 import identity
+import insight
 
 CFG_PATH = os.environ.get("TRIPLINE_CONFIG", "/etc/tripline/config.ini")
 
@@ -39,7 +40,7 @@ FIELDS = [
     ["dot11.device/dot11.device.last_bssid", "bssid"],
     # Network names this client has probed for (directed probe requests). Verify with `doctor`.
     ["dot11.device/dot11.device.probed_ssid_map", "probes"],
-]
+] + insight.EXTRA_FIELDS
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sightings (
@@ -102,7 +103,7 @@ def db_connect(cfg):
     # (you removed it by hand, so automatic sources leave it alone).
     cols = {r[1] for r in db.execute("PRAGMA table_info(devices)")}
     db.execute("CREATE INDEX IF NOT EXISTS ix_presence_ref ON presence(ref)")
-    for col, ddl in (("src", "TEXT"), ("synced_at", "INTEGER"), ("bssid", "TEXT")):
+    for col, ddl in (("src", "TEXT"), ("synced_at", "INTEGER"), ("bssid", "TEXT"), ("extra", "TEXT")):
         if col not in cols:
             db.execute(f"ALTER TABLE devices ADD COLUMN {col} {ddl}")
     db.commit()
@@ -291,6 +292,7 @@ def random_count(db, cfg, now):
 
 SIGHTING_INTERVAL = 10   # seconds; at most one stored sighting per device per interval
 _last_sighting = {}
+_extra_cache = {}
 
 
 def ingest(db, d, now, home=frozenset(), home_ssids=frozenset()):
@@ -332,8 +334,27 @@ def ingest(db, d, now, home=frozenset(), home_ssids=frozenset()):
         (mac, phy, manuf, name, rand, now, now, rssi, at_home))
     if ap:
         db.execute("UPDATE devices SET bssid=? WHERE mac=?", (ap, mac))
+    store_extra(db, mac, d)
     known = db.execute("SELECT known FROM devices WHERE mac=?", (mac,)).fetchone()[0]
     return mac, phy, manuf, rssi, rand, known
+
+
+def store_extra(db, mac, d):
+    """Keep the stable extras (capability fingerprints, AP names, clients). Written only when they change."""
+    new = insight.harvest(d)
+    if not new:
+        return
+    old = _extra_cache.get(mac)
+    if old is None:
+        row = db.execute("SELECT extra FROM devices WHERE mac=?", (mac,)).fetchone()
+        old = insight.load_extra(row[0] if row else None)
+    merged = insight.merge_extra(old, new)
+    # uptime moves every poll; only rewrite for it when nothing else changed by more than a minute
+    cmp_old = {k: v for k, v in old.items() if k != "uptime_s"}
+    cmp_new = {k: v for k, v in merged.items() if k != "uptime_s"}
+    if cmp_old != cmp_new or "uptime_s" not in old:
+        db.execute("UPDATE devices SET extra=? WHERE mac=?", (json.dumps(merged, separators=(",", ":")), mac))
+    _extra_cache[mac] = merged
 
 
 def purge(db, cfg, now):
@@ -503,6 +524,16 @@ def cmd_doctor(cfg, db, args):
                                   + ("" if with_probes else " (expected on a quiet network: most modern phones send no named probes)"))
     if not any("luetooth" in k for k in by_phy):
         note("no Bluetooth devices yet; check the Bluetooth data source and `bluetoothctl list`")
+    bt = next((d for d in devs if "luetooth" in (d.get("kismet.device.base.phyname") or "")), None)
+    if bt:
+        try:
+            rec = kismet_get(cfg, "/devices/by-mac/%s/devices.json" % bt["kismet.device.base.macaddr"])
+            rec = rec[0] if isinstance(rec, list) and rec else {}
+            found = insight.interesting(rec).get("Bluetooth", [])
+            (ok if found else note)("Bluetooth identifying fields in Kismet's record: "
+                                    + (", ".join(k for k, _ in found[:8]) or "none found (open a device in the web UI and read the raw record)"))
+        except Exception as exc:
+            note(f"could not read a Bluetooth record: {exc}")
     if args.dump:
         sample = kismet_get(cfg, f"/devices/last-time/{since}/devices.json", since=since)
         with open(args.dump, "w") as fh:
@@ -530,6 +561,7 @@ def reset_db(db, everything=False):
     meta_set(db, "mode", "learning")
     meta_set(db, "learning_start", int(time.time()))
     _last_sighting.clear()
+    _extra_cache.clear()
     db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     return n
 

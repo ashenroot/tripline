@@ -18,6 +18,7 @@ from flask import Flask, Response, g, jsonify, request
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import identity  # noqa: E402
+import insight  # noqa: E402
 import watcher  # noqa: E402
 
 app = Flask(__name__)
@@ -322,6 +323,14 @@ def api_device(mac):
               "listed": bool(net), "label": (net[0] if net else None) or (apd["label"] if apd else None),
               "manuf": apd["manuf"] if apd else None, "name": apd["name"] if apd else None}
     out["ap"] = ap
+    ex = insight.load_extra(d["extra"])
+    out["extra"] = ex
+    if ex.get("clients"):
+        names = {}
+        for c in ex["clients"]:
+            r = db.execute("SELECT label,name,manuf,known FROM devices WHERE mac=?", (c,)).fetchone()
+            names[c] = {"title": (r["label"] or r["name"] or r["manuf"]) if r else None, "known": bool(r["known"]) if r else None}
+        out["client_names"] = names
     ent = db.execute("SELECT e.id,e.name,e.kind,e.known FROM entity_members m JOIN entities e ON e.id=m.entity_id "
                      "WHERE m.kind='device' AND m.ref=?", (mac,)).fetchone()
     out["entity"] = dict(ent) if ent else None
@@ -365,7 +374,13 @@ def _device_extras(db, mac, now):
             cur = {"start": ts, "end": ts, "n": 1, "sum": rssi, "peak": rssi}
     if cur:
         sessions.append(cur)
-    out = {"address": addr,
+    off0 = time.localtime().tm_gmtoff
+    pts = [[r[0], r[1]] for r in db.execute("SELECT ts,rssi FROM sightings WHERE mac=? AND ts>=? ORDER BY ts",
+                                            (mac, now - 600))]
+    recent = pts[-1][1] if pts else None
+    phy = (db.execute("SELECT phy FROM devices WHERE mac=?", (mac,)).fetchone() or [""])[0]
+    out = {"address": addr, "typical": insight.typical_hours(db, mac, now, off0),
+           "trend": insight.trend(pts), "distance": insight.distance(recent, phy),
            "sessions": [{"start": x["start"], "end": x["end"], "sightings": x["n"],
                          "avg_rssi": round(x["sum"] / x["n"]), "peak_rssi": x["peak"]}
                         for x in sessions[-12:][::-1]]}
@@ -439,7 +454,8 @@ def api_device_live(mac):
     }
     summary = {k: v for k, v in summary.items() if v not in (None, "", 0)}
     raw = json.dumps(rec, indent=1, default=str)
-    return jsonify({"summary": summary, "raw": raw[:200000], "truncated": len(raw) > 200000})
+    return jsonify({"summary": summary, "groups": insight.interesting(rec),
+                    "raw": raw[:200000], "truncated": len(raw) > 200000})
 
 
 @app.get("/api/history/<mac>")
@@ -581,7 +597,13 @@ def _entity_args(b):
 
 @app.get("/api/entities")
 def api_entities():
-    return jsonify({"entities": identity.entity_view(get_db()), "kinds": list(identity.ENTITY_KINDS)})
+    db, now = get_db(), int(time.time())
+    ents = identity.entity_view(db)
+    off = time.localtime().tm_gmtoff
+    for e in ents:
+        mem = [(m["kind"], m["ref"]) for m in e["members"]]
+        e["pattern"] = insight.entity_pattern(db, mem, now, off)
+    return jsonify({"entities": ents, "kinds": list(identity.ENTITY_KINDS)})
 
 
 @app.post("/api/entities")
