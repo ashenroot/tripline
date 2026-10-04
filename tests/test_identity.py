@@ -224,6 +224,58 @@ class TpmsAndCooccurrence(Base):
         self.assertEqual(len(refs), 1)
 
 
+class EntityLevel(Base):
+    def setup_entity(self):
+        watcher.ingest(self.db, probe_rec("da:aa:00:00:00:0a", ["X_net", "a1", "a2", "a3", "a4"]), NOW, frozenset())
+        watcher.ingest(self.db, probe_rec("da:aa:00:00:00:0b", ["Z_net", "b1", "b2", "b3", "b4"]), NOW + 100, frozenset())
+        self.eid = identity.create_entity(self.db, "Bob")
+        identity.add_member(self.db, self.eid, "device", "da:aa:00:00:00:0a")
+        identity.add_member(self.db, self.eid, "device", "da:aa:00:00:00:0b")
+
+    def test_partial_overlap_with_each_member_matches_the_entity(self):
+        self.setup_entity()
+        watcher.ingest(self.db, probe_rec("da:cc:00:00:00:01", ["X_net", "Z_net", "c1", "c2"]), NOW + 90000, frozenset())
+        sug = identity.suggestions(self.db, self.cfg, NOW + 91000)
+        self.assertEqual(len(sug), 1)
+        self.assertEqual((sug[0]["entity_id"], sug[0]["entity_name"]), (self.eid, "Bob"))
+        self.assertEqual(sug[0]["members"], [{"kind": "device", "ref": "da:cc:00:00:00:01"}])
+        self.assertEqual(sug[0]["evidence"]["ssid"]["ssids"], ["X_net", "Z_net"])
+
+    def test_single_member_overlap_alone_is_not_enough(self):
+        self.setup_entity()
+        watcher.ingest(self.db, probe_rec("da:cc:00:00:00:01", ["X_net", "c1", "c2", "c3", "c4"]), NOW + 90000, frozenset())
+        self.assertEqual(identity.suggestions(self.db, self.cfg, NOW + 91000), [])
+
+    def test_simultaneous_with_a_member_is_a_different_device(self):
+        self.setup_entity()
+        for k in range(6):
+            watcher.ingest(self.db, probe_rec("da:aa:00:00:00:0a", ["X_net", "a1", "a2", "a3", "a4"]), NOW + 5000 + k * 60, frozenset())
+            watcher.ingest(self.db, probe_rec("da:cc:00:00:00:01", ["X_net", "Z_net", "c1", "c2"]), NOW + 5000 + k * 60, frozenset())
+        self.assertEqual(identity.suggestions(self.db, self.cfg, NOW + 91000), [])
+
+    def test_accept_adds_to_entity_and_dismiss_remembers(self):
+        self.setup_entity()
+        watcher.ingest(self.db, probe_rec("da:cc:00:00:00:01", ["X_net", "Z_net", "c1", "c2"]), NOW + 90000, frozenset())
+        m = [{"kind": "device", "ref": "da:cc:00:00:00:01"}]
+        identity.dismiss_from_entity(self.db, self.eid, m)
+        self.assertEqual(identity.suggestions(self.db, self.cfg, NOW + 91000), [])
+        self.db.execute("DELETE FROM dismissed")
+        identity.add_to_entity(self.db, self.eid, m)
+        self.assertEqual(identity.entity_of(self.db, "device", "da:cc:00:00:00:01"), self.eid)
+        self.assertEqual(identity.suggestions(self.db, self.cfg, NOW + 91000), [])
+
+    def test_signals_summary_covers_different_signal_types(self):
+        self.setup_entity()
+        self.db.execute("INSERT INTO devices(mac,phy,rand,first_seen,last_seen,max_rssi,known) VALUES('55:55:55:55:55:55','Bluetooth',0,1,500,-60,0)")
+        tpms.record(self.cfg, self.db, tpms.parse(json.dumps({"model": "Ford", "type": "TPMS", "id": "z"})), 900, {})
+        identity.add_member(self.db, self.eid, "device", "55:55:55:55:55:55")
+        identity.add_member(self.db, self.eid, "vehicle", "Ford:z")
+        sig = {g["signal"]: g for g in identity.entity_view(self.db)[0]["signals"]}
+        self.assertEqual(set(sig), {"Wi-Fi", "Bluetooth", "Tyre sensors", "Network names"})
+        self.assertEqual(sig["Wi-Fi"]["count"], 2)
+        self.assertEqual(sig["Network names"]["count"], 10)
+
+
 class Groups(Base):
     def test_link_group_links_all_and_dismiss_group(self):
         macs = [f"00:10:20:30:40:0{i}" for i in range(4)]
@@ -299,6 +351,12 @@ class Api(Base):
         self.assertEqual(self.client.post("/api/suggestions/accept", headers=H, json={"a": a}).status_code, 400)
         self.assertEqual(self.client.post("/api/suggestions/accept", headers=H,
                                           json={"members": [a], "name": "x"}).status_code, 400)
+        eid = self.client.get("/api/entities").get_json()["entities"][0]["id"]
+        self.dev("00:10:20:30:40:09")
+        r = self.client.post("/api/suggestions/accept", headers=H,
+                             json={"entity_id": eid, "members": [{"kind": "device", "ref": "00:10:20:30:40:09"}]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(self.client.get("/api/entities").get_json()["entities"][0]["members"]), 3)
         self.assertEqual(self.client.post("/api/suggestions/dismiss", headers=H, json={"a": a, "b": b}).status_code, 200)
         self.assertEqual(self.client.get("/api/suggestions").status_code, 200)
 

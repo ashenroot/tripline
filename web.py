@@ -443,11 +443,11 @@ def api_suggestions():
     return jsonify({"suggestions": out})
 
 
-def _members(b):
+def _members(b, minimum=2):
     members = b.get("members") or [b.get("a"), b.get("b")]
-    if (not isinstance(members, list) or len(members) < 2 or len(members) > 20
+    if (not isinstance(members, list) or len(members) < minimum or len(members) > 20
             or not all(isinstance(m, dict) and "kind" in m and "ref" in m for m in members)):
-        raise ValueError("members must be 2-20 objects with kind and ref")
+        raise ValueError("members must be objects with kind and ref")
     return [{"kind": str(m["kind"]), "ref": str(m["ref"])} for m in members]
 
 
@@ -455,7 +455,10 @@ def _members(b):
 def api_suggestions_accept():
     b = body()
     try:
-        eid = identity.link_group(get_db(), _members(b), **_entity_args(b))
+        if b.get("entity_id") is not None:
+            eid = identity.add_to_entity(get_db(), int(b["entity_id"]), _members(b, 1))
+        else:
+            eid = identity.link_group(get_db(), _members(b), **_entity_args(b))
     except KeyError as exc:
         return jsonify({"error": str(exc.args[0])}), 404
     except (ValueError, TypeError) as exc:
@@ -465,9 +468,13 @@ def api_suggestions_accept():
 
 @app.post("/api/suggestions/dismiss")
 def api_suggestions_dismiss():
+    b = body()
     try:
-        identity.dismiss_group(get_db(), _members(body()))
-    except ValueError as exc:
+        if b.get("entity_id") is not None:
+            identity.dismiss_from_entity(get_db(), int(b["entity_id"]), _members(b, 1))
+        else:
+            identity.dismiss_group(get_db(), _members(b))
+    except (ValueError, TypeError) as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"ok": True})
 

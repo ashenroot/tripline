@@ -251,7 +251,7 @@ dialog input,dialog select{width:100%;margin-top:4px}
 
 <section id="view-ent" class="card hidden">
   <h2>Suggested links</h2>
-  <p class="dim" style="margin:0 0 8px">Pairs that may belong to the same person, vehicle or household, based on shared probed network names, sensors heard together, and devices that appear in the same time windows. Suggestions are evidence, not proof. Nothing links until you accept it.</p>
+  <p class="dim" style="margin:0 0 8px">Records that may belong to the same person, vehicle or household, or that match an entity you already made. The evidence is probed network names (compared against everything an entity has shown across all its devices), tyre sensors heard together, and devices that appear in the same time windows. An entity does not need every signal on every visit. Suggestions are evidence, not proof, and nothing links until you accept it.</p>
   <div id="sug-list"></div>
   <h2 style="margin-top:20px">Entities</h2>
   <div id="ent-list"></div>
@@ -881,7 +881,7 @@ $('#ssid-add').onclick = async () => {
 
 function evidenceText(ev) {
   const out = [];
-  if (ev.ssid) out.push('Both probed for: ' + ev.ssid.ssids.join(', '));
+  if (ev.ssid) out.push((ev.ssid.from_members ? 'Probed names shared with the entity: ' : 'Both probed for: ') + ev.ssid.ssids.join(', '));
   if (ev.tpms) out.push('Tyre sensors heard together at least ' + ev.tpms.count + ' times');
   if (ev.cooccur) out.push('Present in the same time windows ' + ev.cooccur.shared + ' times (' + Math.round(ev.cooccur.ratio * 100) + '% overlap)');
   return out;
@@ -899,7 +899,8 @@ async function loadEntities() {
   for (const x of s.suggestions) {
     const card = el('div', 'sug');
     const pair = el('div', 'pair');
-    if (x.members.length === 2) { pair.appendChild(side(x.members[0])); pair.appendChild(el('div', 'arrow', '\u21c4')); pair.appendChild(side(x.members[1])); }
+    if (x.entity_id) { const t = el('div'); t.appendChild(el('div', 'dim', 'Looks like part of')); t.appendChild(el('h3', null, x.entity_name)); t.style.margin = '0'; pair.style.gridTemplateColumns = '1fr auto 1fr'; pair.appendChild(side(x.members[0])); pair.appendChild(el('div', 'arrow', '\u2192')); pair.appendChild(t); }
+    else if (x.members.length === 2) { pair.appendChild(side(x.members[0])); pair.appendChild(el('div', 'arrow', '\u21c4')); pair.appendChild(side(x.members[1])); }
     else { pair.style.gridTemplateColumns = 'repeat(auto-fit,minmax(200px,1fr))'; for (const m of x.members) pair.appendChild(side(m)); }
     card.appendChild(pair);
     const meta = el('div', 'row'); meta.style.marginTop = '8px';
@@ -907,18 +908,18 @@ async function loadEntities() {
     for (const t of evidenceText(x.evidence)) meta.appendChild(el('span', 'dim', t));
     card.appendChild(meta);
     const act = el('div', 'row'); act.style.marginTop = '8px';
-    const existing = x.entities.length > 0;
+    const existing = x.entities.length > 0 || !!x.entity_id;
     const name = el('input'); name.type = 'text'; name.maxLength = 40; name.placeholder = existing ? 'adds to the existing entity' : 'Name (Bob, Truck...)';
-    name.disabled = existing;
-    const ok = el('button', 'btn primary', x.members.length > 2 ? 'Link all ' + x.members.length + ' as one entity' : 'Link as one entity');
+    name.disabled = existing; if (x.entity_id) name.style.display = 'none';
+    const ok = el('button', 'btn primary', x.entity_id ? 'Add to ' + x.entity_name : x.members.length > 2 ? 'Link all ' + x.members.length + ' as one entity' : 'Link as one entity');
     const refs = x.members.map(m => ({ kind: m.kind, ref: m.ref }));
     ok.onclick = async () => {
       if (!existing && !name.value.trim()) { name.focus(); return; }
-      await post('/api/suggestions/accept', { members: refs, name: name.value, kind: 'household' });
+      await post('/api/suggestions/accept', x.entity_id ? { entity_id: x.entity_id, members: refs } : { members: refs, name: name.value, kind: 'household' });
       loadEntities();
     };
     const no = el('button', 'btn', 'Not the same');
-    no.onclick = async () => { await post('/api/suggestions/dismiss', { members: refs }); loadEntities(); };
+    no.onclick = async () => { await post('/api/suggestions/dismiss', x.entity_id ? { entity_id: x.entity_id, members: refs } : { members: refs }); loadEntities(); };
     act.appendChild(name); act.appendChild(ok); act.appendChild(no); card.appendChild(act);
     sl.appendChild(card);
   }
@@ -935,6 +936,11 @@ async function loadEntities() {
     const del = el('button', 'btn danger', 'Delete');
     del.onclick = async () => { if (!confirm('Delete "' + n.name + '"? Its devices stay as they are but are no longer grouped.')) return; await post('/api/entities/delete', { id: n.id }); loadEntities(); };
     head.appendChild(del); card.appendChild(head);
+    if (n.signals && n.signals.length) {
+      const sg = el('div', 'row'); sg.style.marginTop = '8px'; sg.appendChild(el('span', 'dim', 'Signals:'));
+      for (const g of n.signals) sg.appendChild(el('span', 'badge', g.signal + (g.count > 1 ? ' \u00d7' + g.count : '') + (g.last_seen ? ' \u00b7 ' + ago(g.last_seen) : '')));
+      card.appendChild(sg);
+    }
     const list = el('div'); list.style.marginTop = '8px';
     for (const m of n.members) {
       const r = el('div', 'mem'); r.appendChild(el('span', null, m.label || m.ref));

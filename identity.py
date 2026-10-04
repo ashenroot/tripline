@@ -209,8 +209,21 @@ def entity_view(db):
                     mem.append({"kind": "vehicle", "ref": ref, "label": r[0] or r[1] or "",
                                 "phy": "TPMS", "last_seen": r[2], "rand": 0})
         seen = max((m["last_seen"] or 0 for m in mem), default=0)
+        sig = {}
+        for m in mem:
+            label = ("Tyre sensors" if m["kind"] == "vehicle" else
+                     "Bluetooth" if "luetooth" in (m["phy"] or "") else
+                     "Wi-Fi" if "802.11" in (m["phy"] or "") else (m["phy"] or "Device"))
+            s = sig.setdefault(label, {"signal": label, "count": 0, "last_seen": None})
+            s["count"] += 1
+            s["last_seen"] = max(s["last_seen"] or 0, m["last_seen"] or 0) or None
+        names = {r[0] for r in db.execute(
+            "SELECT DISTINCT ssid FROM probes WHERE mac IN (SELECT ref FROM entity_members "
+            "WHERE kind='device' AND entity_id=?)", (e[0],))}
+        if names:
+            sig["Network names"] = {"signal": "Network names", "count": len(names), "last_seen": None}
         out.append({"id": e[0], "name": e[1], "kind": e[2], "created": e[3], "expires": e[4],
-                    "known": e[5], "last_seen": seen or None, "members": mem})
+                    "known": e[5], "last_seen": seen or None, "members": mem, "signals": list(sig.values())})
     return out
 
 
@@ -304,6 +317,65 @@ def cooccurrence_evidence(db, now=None):
     return out
 
 
+def entity_suggestions(db, cfg, now=None):
+    """Records that match what an entity has shown across ALL its members, not one member.
+
+    The entity's network names are the union of its devices' probes, so a record that shares a
+    few names with each of several members still matches. Entities do not need every member
+    to transmit on every trip: any member's evidence counts.
+    """
+    now = int(now or time.time())
+    since = now - COOCCUR_DAYS * 86400
+    home = home_ssid_set(cfg, db)
+    w = weights(db)
+    per = {}
+    for mac, ssid in db.execute("SELECT mac, ssid FROM probes"):
+        if ssid.casefold() not in home:
+            per.setdefault(mac, set()).add(ssid)
+    n_dev = max(1, len(per))
+    freq = {}
+    for ss in per.values():
+        for s in ss:
+            freq[s] = freq.get(s, 0) + 1
+    usable = lambda s: freq.get(s, 0) <= max(6, 0.25 * n_dev)
+    linked = _linked(db)
+    dismissed = _dismissed(db)
+    members = {}
+    for kind, ref, eid in db.execute("SELECT kind, ref, entity_id FROM entity_members"):
+        members.setdefault(eid, []).append((kind, ref))
+    names = {r[0]: r[1] for r in db.execute("SELECT id, name FROM entities")}
+    out = []
+    for eid, mem in members.items():
+        macs = [r for k, r in mem if k == "device"]
+        eset = set().union(*(per.get(m, set()) for m in macs)) if macs else set()
+        eset = {s for s in eset if usable(s)}
+        if not eset:
+            continue
+        etot = sum(w.get(s, 0) for s in eset)
+        sharing = {}
+        for cand, ss in per.items():
+            key = _key("device", cand)
+            if cand in macs or key in linked:
+                continue
+            if _pair(_key("entity", str(eid)), key) in dismissed:
+                continue
+            inter = {s for s in ss if s in eset}
+            iw = sum(w.get(s, 0) for s in inter)
+            ctot = sum(w.get(s, 0) for s in ss if usable(s)) or 1
+            if iw < MIN_SHARED_WEIGHT or iw / min(etot, ctot) < MIN_SHARED_FRACTION:
+                continue
+            donors = [m for m in macs if per.get(m, set()) & inter]
+            if any(_overlap_minutes(db, cand, m, since) >= 3 for m in donors):
+                continue  # heard at the same time as a member: a different device
+            sharing[cand] = (iw, sorted(inter)[:6], len(donors))
+        for cand, (iw, inter, donors) in sharing.items():
+            pts = 3 if iw >= 5 else 2 if iw >= 3 else 1
+            out.append({"members": [{"kind": "device", "ref": cand}], "entity_id": eid, "entity_name": names.get(eid),
+                        "evidence": {"ssid": {"weight": round(iw, 2), "ssids": inter, "from_members": donors}},
+                        "level": "high" if pts >= 4 else "medium" if pts >= 2 else "low", "points": pts})
+    return out
+
+
 def tpms_evidence(db):
     return {(_key("vehicle", a), _key("vehicle", b)): {"count": n}
             for a, b, n in db.execute("SELECT a, b, n FROM vehicle_pairs WHERE n>=?", (MIN_TPMS_PAIR,))}
@@ -354,9 +426,22 @@ def suggestions(db, cfg, now=None):
                     "level": "high" if pts >= 4 else "medium" if pts >= 2 else "low", "points": pts,
                     "entity_a": linked.get(a), "entity_b": linked.get(b)})
     out = _group_tpms(out)
+    ent_sugs = entity_suggestions(db, cfg, now)
+    covered = {(s["entity_id"], s["members"][0]["ref"]) for s in ent_sugs}
+    keep = []
+    for s in out:
+        ents = [e for e in (s.get("entity_a"), s.get("entity_b")) if e]
+        refs = [m["ref"] for m in (s.get("members") or [s["a"], s["b"]])]
+        if any((e, r) in covered for e in ents for r in refs):
+            continue  # the entity-level suggestion already says this, with more evidence
+        keep.append(s)
+    out = keep
     for s in out:
         s["members"] = s.get("members") or [s["a"], s["b"]]
         s["entities"] = sorted({e for e in (s.get("entity_a"), s.get("entity_b"), *s.get("entities", [])) if e})
+    out += ent_sugs
+    for s in ent_sugs:
+        s.setdefault("entities", [s["entity_id"]])
     out.sort(key=lambda s: -s["points"])
     return out[:50]
 
@@ -386,6 +471,19 @@ def _group_tpms(items):
                      "evidence": {"tpms": {"count": min(s["evidence"]["tpms"]["count"] for s in g)}},
                      "level": "high" if pts >= 4 else "medium" if pts >= 2 else "low", "points": pts})
     return rest
+
+
+def add_to_entity(db, entity_id, members):
+    for m in members:
+        add_member(db, entity_id, m["kind"], m["ref"])
+    return entity_id
+
+
+def dismiss_from_entity(db, entity_id, members):
+    for m in members:
+        a, b = _pair(_key("entity", str(entity_id)), _key(m["kind"], m["ref"]))
+        db.execute("INSERT OR IGNORE INTO dismissed(a,b) VALUES(?,?)", (a, b))
+    db.commit()
 
 
 def dismiss(db, a, b):

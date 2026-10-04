@@ -132,6 +132,12 @@ vehicle, regular visitor or contractor).
   suggested as one device. Most current phones send no named probes, so this helps on some
   devices only. Past guests who joined your Wi-Fi also probe for it; set
   `ssid_marks_known = false` to use your SSIDs for suggestions only.
+- **Whole-entity matching.** Once an entity exists, new records are compared against everything
+  it has shown across all its members. A record that shares a few probed names with each of
+  an entity's phones is suggested as "part of Bob" even if no single phone overlaps enough.
+  Members never need to appear on the same trip: a watch one day, tyre sensors another, and a
+  phone's network names a third all count toward the same entity, and each entity card lists
+  which signals have been seen and when. (Shared time windows are still pairwise.)
 - **Tyre sensors.** Sensors heard together repeatedly are folded into one suggestion per car.
 - **Shared time windows.** Devices and vehicles that keep appearing in the same 5-minute
   windows are suggested as a pair. Always-present devices are ignored.
