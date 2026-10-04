@@ -8,3 +8,4 @@
 - Say what you verified on real hardware (Kismet version, adapter, UniFi version). Unverified
   field names are the project's biggest risk, so reports are as valuable as code.
 - Keep detection changes conservative: a false alarm every night gets the system turned off.
+- By contributing you agree your work is released under GPL-3.0-or-later.

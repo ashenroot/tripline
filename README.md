@@ -116,6 +116,10 @@ passersby's. It is passive: it transmits nothing and does not read traffic conte
 Laws on collecting device identifiers differ by country and state. Run it only on property
 you control, keep `retention_days` short, and check your local rules.
 
+## License
+
+GPL-3.0-or-later. See `LICENSE`. Modified versions that you distribute must be released under the same license with source.
+
 ## Not yet done
 
 Vehicle detection via `rtl_433` (TPMS sensors), additional notification channels, and
