@@ -536,6 +536,10 @@ Kismet record and probed names are shown to anyone who can sign in.
 
 `known_sync.py once` runs the known-device sources once; `tpms.py run` runs the vehicle decoder.
 
+## Contributing
+
+Issues and pull requests are welcome. See `CONTRIBUTING.md` for the workflow and the test setup.
+
 ## Tests
 
 ```
