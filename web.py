@@ -16,6 +16,7 @@ from flask import Flask, Response, jsonify, request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import identity  # noqa: E402
 import watcher  # noqa: E402
 
 app = Flask(__name__)
@@ -228,7 +229,11 @@ def api_devices():
     where = {"unknown": "known=0 AND rand=0", "known": "known=1",
              "random": "rand=1", "all": "1=1"}.get(flt, "known=0 AND rand=0")
     sql = ("SELECT mac,phy,manuf,name,rand,known,label,first_seen,last_seen,max_rssi,"
-           f"seen_count FROM devices WHERE {where}")
+           "seen_count,(SELECT COUNT(*) FROM probes p WHERE p.mac=devices.mac) AS probe_count,"
+           "(SELECT group_concat(ssid, char(10)) FROM (SELECT ssid FROM probes p WHERE p.mac=devices.mac "
+           "ORDER BY last_seen DESC LIMIT 6)) AS probe_list,"
+           "(SELECT entity_id FROM entity_members m WHERE m.kind='device' AND m.ref=devices.mac) AS entity_id "
+           f"FROM devices WHERE {where}")
     args = []
     if q:
         sql += " AND (mac LIKE ? OR LOWER(COALESCE(manuf,'')) LIKE ? OR " \
@@ -364,6 +369,132 @@ def api_networks_del():
         return jsonify({"error": "bad bssid"}), 400
     db = get_db()
     db.execute("DELETE FROM networks WHERE bssid=?", (bssid,))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+def _entity_args(b):
+    return dict(name=b.get("name"), kind=b.get("kind") or "household",
+                expires_days=b.get("expires_days") or None)
+
+
+@app.get("/api/entities")
+def api_entities():
+    return jsonify({"entities": identity.entity_view(get_db()), "kinds": list(identity.ENTITY_KINDS)})
+
+
+@app.post("/api/entities")
+def api_entities_create():
+    b = body()
+    try:
+        eid = identity.create_entity(get_db(), known=bool(b.get("known", True)), **_entity_args(b))
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True, "id": eid})
+
+
+@app.post("/api/entities/member")
+def api_entities_member():
+    b = body()
+    db = get_db()
+    try:
+        eid = b.get("entity_id")
+        if eid in (None, "", "new"):
+            new = b.get("new") or {}
+            eid = identity.create_entity(db, known=bool(new.get("known", True)), **_entity_args(new))
+        identity.add_member(db, int(eid), str(b.get("kind")), str(b.get("ref")))
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    except KeyError as exc:
+        return jsonify({"error": str(exc.args[0])}), 404
+    return jsonify({"ok": True, "id": int(eid)})
+
+
+@app.post("/api/entities/member/delete")
+def api_entities_member_del():
+    b = body()
+    identity.remove_member(get_db(), str(b.get("kind")), str(b.get("ref")))
+    return jsonify({"ok": True})
+
+
+@app.post("/api/entities/delete")
+def api_entities_delete():
+    try:
+        identity.delete_entity(get_db(), int(body().get("id")))
+    except (TypeError, ValueError):
+        return jsonify({"error": "bad id"}), 400
+    return jsonify({"ok": True})
+
+
+@app.get("/api/suggestions")
+def api_suggestions():
+    db = get_db()
+    out = identity.suggestions(db, cfg())
+    for s in out:
+        for m in s["members"]:
+            if m["kind"] == "device":
+                r = db.execute("SELECT label,manuf,name,phy,last_seen FROM devices WHERE mac=?", (m["ref"],)).fetchone()
+                m["title"] = (r[0] or r[2] or r[1] or m["ref"]) if r else m["ref"]
+                m["phy"], m["last_seen"] = (r[3], r[4]) if r else ("", None)
+            else:
+                r = db.execute("SELECT label,model,last_seen FROM vehicles WHERE vid=?", (m["ref"],)).fetchone()
+                m["title"] = (r[0] or r[1] or m["ref"]) if r else m["ref"]
+                m["phy"], m["last_seen"] = "TPMS", (r[2] if r else None)
+    return jsonify({"suggestions": out})
+
+
+def _members(b):
+    members = b.get("members") or [b.get("a"), b.get("b")]
+    if (not isinstance(members, list) or len(members) < 2 or len(members) > 20
+            or not all(isinstance(m, dict) and "kind" in m and "ref" in m for m in members)):
+        raise ValueError("members must be 2-20 objects with kind and ref")
+    return [{"kind": str(m["kind"]), "ref": str(m["ref"])} for m in members]
+
+
+@app.post("/api/suggestions/accept")
+def api_suggestions_accept():
+    b = body()
+    try:
+        eid = identity.link_group(get_db(), _members(b), **_entity_args(b))
+    except KeyError as exc:
+        return jsonify({"error": str(exc.args[0])}), 404
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True, "id": eid})
+
+
+@app.post("/api/suggestions/dismiss")
+def api_suggestions_dismiss():
+    try:
+        identity.dismiss_group(get_db(), _members(body()))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True})
+
+
+@app.get("/api/ssids")
+def api_ssids():
+    db = get_db()
+    rows = [r[0] for r in db.execute("SELECT ssid FROM home_ssids ORDER BY added DESC")]
+    cfg_list = [s.strip() for s in cfg().get("detect", "home_ssids", fallback="").split(",") if s.strip()]
+    return jsonify({"ssids": rows, "from_config": cfg_list})
+
+
+@app.post("/api/ssids")
+def api_ssids_add():
+    ssid = identity.clean_ssid(str(body().get("ssid", "")))
+    if not ssid:
+        return jsonify({"error": "bad ssid"}), 400
+    db = get_db()
+    db.execute("INSERT OR IGNORE INTO home_ssids(ssid,added) VALUES(?,?)", (ssid, int(time.time())))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/ssids/delete")
+def api_ssids_del():
+    db = get_db()
+    db.execute("DELETE FROM home_ssids WHERE ssid=?", (str(body().get("ssid", "")),))
     db.commit()
     return jsonify({"ok": True})
 

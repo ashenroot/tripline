@@ -19,6 +19,9 @@ does not work:
 - The `linuxbluetooth` Kismet data source type (`kismet --list-datasources`).
 - UniFi client-list field names across Network versions.
 - The "rotating Bluetooth address" heuristic (no vendor resolved).
+- The probed-SSID field (`dot11.device.probed_ssid_map`) and its JSON shape.
+
+Run `watcher.py doctor` first on real hardware; it checks most of these.
 
 Reports and fixes from real hardware are the most useful contribution right now.
 
@@ -32,6 +35,8 @@ Reports and fixes from real hardware are the most useful contribution right now.
 - **Your own network** is excluded from the noise. Clients associated with your access
   points (`home_bssids` in the config, or the My networks box in the Devices tab) and devices from a known-device source (UniFi, a text file, or your
   own plugin) are marked known automatically. Hand edits in the UI always win.
+- **Entities:** you can group a person's devices, wearables and vehicle sensors into one
+  entity, with suggestions from probed network names and shared appearances.
 - **Vehicles:** with an RTL-SDR dongle, tyre-pressure sensor IDs identify cars arriving at the
   property (see Vehicle detection below).
 - **Modes:** `learning` (log only), `home`, `away`, plus a timed guest window that
@@ -82,7 +87,7 @@ Afterwards leave it in `learning` mode for 1-2 weeks, then press Arm in the web 
    suid-root helpers, and put the user that runs it in the `kismet` group.
 2. Create `~/.kismet/kismet_httpd.conf` for that user with `httpd_username` and `httpd_password`.
 3. `sudo cp examples/kismet_site.conf /etc/kismet/` and set your Wi-Fi interface (`iw dev`).
-4. Copy `watcher.py web.py known_sync.py dashboard.html` and `sources/` to `/opt/tripline`,
+4. Copy `watcher.py web.py known_sync.py identity.py tpms.py dashboard.html` and `sources/` to `/opt/tripline`,
    copy `config.example.ini` to `/etc/tripline/config.ini` and edit it.
 5. Copy `systemd/*.service` to `/etc/systemd/system/`, set `User=`, then
    `sudo systemctl enable --now kismet tripline-watcher tripline-web` (add `tripline-tpms` if you use an SDR, and copy `tpms.py` too).
@@ -113,6 +118,41 @@ and leaving, and does not see parked ones.
 Unverified on real hardware: the `rtl_433` JSON fields (`type: TPMS`, `pressure_*`), the
 behavior of dual-band hopping on a single dongle, and the Bluetooth and USB detection in the
 installer.
+
+## Entities and link suggestions
+
+Randomized addresses mean one person shows up as many unrelated records. Tripline keeps
+weak evidence and lets you join the pieces by hand into an **entity** (a person, household,
+vehicle, regular visitor or contractor).
+
+- **Probed network names.** Some devices ask for networks they have joined before. Add your
+  own SSIDs under "My network names" (or `home_ssids` in the config): a device that probes
+  for one is treated as yours. Names are weighted by rarity, so `xfinitywifi` counts for
+  almost nothing and `Smith_Cabin_5G` for a lot. Two records that share rare names are
+  suggested as one device. Most current phones send no named probes, so this helps on some
+  devices only. Past guests who joined your Wi-Fi also probe for it; set
+  `ssid_marks_known = false` to use your SSIDs for suggestions only.
+- **Tyre sensors.** Sensors heard together repeatedly are folded into one suggestion per car.
+- **Shared time windows.** Devices and vehicles that keep appearing in the same 5-minute
+  windows are suggested as a pair. Always-present devices are ignored.
+- **Confidence** is low, medium or high, from how many independent signals agree. It is a
+  rule of thumb, not a probability.
+- **Nothing links automatically.** Accept or dismiss each suggestion in the Entities tab, or
+  use Link on any device or vehicle row. Linking marks every member known (or leave an
+  entity untrusted to keep alerting on it). Visitors and contractors can be known for a set
+  number of days, after which their members become unknown again.
+- Rotating addresses can be linked, but a rotated address stops appearing, so the link only
+  covers the records you have already seen.
+- Probed network names reveal where a person has been. They are deleted with the device
+  record after `retention_days` unless the device belongs to an entity. They are never sent
+  anywhere.
+
+## Checking a new install
+
+`python3 /opt/tripline/watcher.py doctor` (with `TRIPLINE_CONFIG` set) connects to Kismet and
+reports whether the data sources are running and whether signal strength, associated BSSIDs
+and probed SSIDs are actually present. `doctor --dump out.json` also saves five raw device
+records, which is what to send when a field name turns out to differ on your Kismet version.
 
 ## Known-device sources
 
@@ -171,5 +211,5 @@ GPL-3.0-or-later. See `LICENSE`. Modified versions that you distribute must be r
 
 ## Not yet done
 
-Additional notification channels, a vehicle arrival/departure timeline, and verification
+Additional notification channels, arrival and departure events per entity, and verification
 on real hardware.

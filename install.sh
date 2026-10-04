@@ -205,7 +205,7 @@ fi
 # ---------------------------------------------------------------- code
 say "Installing code to $PREFIX"
 install -d "$PREFIX" "$PREFIX/sources"
-install -m 0644 "$SRC"/watcher.py "$SRC"/web.py "$SRC"/known_sync.py "$SRC"/tpms.py "$SRC"/dashboard.html "$PREFIX"/
+install -m 0644 "$SRC"/watcher.py "$SRC"/web.py "$SRC"/known_sync.py "$SRC"/tpms.py "$SRC"/identity.py "$SRC"/dashboard.html "$PREFIX"/
 install -m 0644 "$SRC"/sources/*.py "$PREFIX/sources/"
 
 install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" "$DATA_DIR"
@@ -348,6 +348,7 @@ Tripline is installed.
   Data:      $DATA_DIR
   CLI:       sudo -u $SVC_USER env TRIPLINE_CONFIG=$CFG python3 $PREFIX/watcher.py status
 
+First check:  sudo -u $SVC_USER env TRIPLINE_CONFIG=$CFG python3 $PREFIX/watcher.py doctor
 Next: leave it in learning mode for 1-2 weeks, then press Arm in the web UI.
 Uninstall: sudo ./install.sh --uninstall [--purge]
 EOF

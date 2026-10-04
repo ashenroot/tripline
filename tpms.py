@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 
+import identity
 import watcher
 from watcher import log, meta_get, notify
 
@@ -43,13 +44,16 @@ def parse(line):
             "freq": float(freq) if isinstance(freq, (int, float)) else None}
 
 
-def record(cfg, db, msg, now, last_alert):
+def record(cfg, db, msg, now, last_alert, recent=None):
     """Store one decoded message; alert on an unknown vehicle. Returns True if an alert was sent."""
     db.execute(
         "INSERT INTO vehicles(vid,model,sensor_id,first_seen,last_seen,seen_count,known,last_rssi,last_freq) "
         "VALUES(?,?,?,?,?,1,0,?,?) ON CONFLICT(vid) DO UPDATE SET last_seen=excluded.last_seen, "
         "seen_count=seen_count+1, last_rssi=excluded.last_rssi, last_freq=excluded.last_freq",
         (msg["vid"], msg["model"], msg["id"], now, now, msg["rssi"], msg["freq"]))
+    db.execute("INSERT INTO vehicle_sightings(ts,vid) VALUES(?,?)", (now, msg["vid"]))
+    if recent is not None:
+        identity.note_tpms(db, recent, msg["vid"], now)
     db.commit()
     known = db.execute("SELECT known FROM vehicles WHERE vid=?", (msg["vid"],)).fetchone()[0]
     mode = meta_get(db, "mode", "learning")
@@ -78,13 +82,13 @@ def command(cfg):
 
 
 def consume(cfg, db, lines):
-    last_alert, last_purge = {}, 0
+    last_alert, last_purge, recent = {}, 0, {}
     for line in lines:
         msg = parse(line)
         if msg is None:
             continue
         now = int(time.time())
-        record(cfg, db, msg, now, last_alert)
+        record(cfg, db, msg, now, last_alert, recent)
         if now - last_purge > 3600:
             cutoff = now - cfg.getint("detect", "retention_days") * 86400
             db.execute("DELETE FROM vehicles WHERE known=0 AND last_seen<?", (cutoff,))

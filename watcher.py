@@ -23,6 +23,8 @@ import time
 import urllib.parse
 import urllib.request
 
+import identity
+
 CFG_PATH = os.environ.get("TRIPLINE_CONFIG", "/etc/tripline/config.ini")
 
 FIELDS = [
@@ -35,6 +37,8 @@ FIELDS = [
     # BSSID of the access point a Wi-Fi client is associated with. Verify this field
     # name against your Kismet version; if it is absent, home_bssids simply has no effect.
     ["dot11.device/dot11.device.last_bssid", "bssid"],
+    # Network names this client has probed for (directed probe requests). Verify with `doctor`.
+    ["dot11.device/dot11.device.probed_ssid_map", "probes"],
 ]
 
 SCHEMA = """
@@ -53,6 +57,20 @@ CREATE TABLE IF NOT EXISTS vehicles (
     vid TEXT PRIMARY KEY, model TEXT, sensor_id TEXT, first_seen INTEGER, last_seen INTEGER,
     seen_count INTEGER DEFAULT 0, known INTEGER DEFAULT 0, label TEXT,
     last_rssi REAL, last_freq REAL);
+CREATE TABLE IF NOT EXISTS probes (
+    mac TEXT, ssid TEXT, first_seen INTEGER, last_seen INTEGER, PRIMARY KEY(mac, ssid));
+CREATE INDEX IF NOT EXISTS ix_probes_ssid ON probes(ssid);
+CREATE TABLE IF NOT EXISTS home_ssids (ssid TEXT PRIMARY KEY, added INTEGER);
+CREATE TABLE IF NOT EXISTS entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, kind TEXT, created INTEGER,
+    expires INTEGER, known INTEGER DEFAULT 1);
+CREATE TABLE IF NOT EXISTS entity_members (
+    kind TEXT, ref TEXT, entity_id INTEGER, added INTEGER, PRIMARY KEY(kind, ref));
+CREATE TABLE IF NOT EXISTS dismissed (a TEXT, b TEXT, PRIMARY KEY(a, b));
+CREATE TABLE IF NOT EXISTS vehicle_pairs (
+    a TEXT, b TEXT, n INTEGER, last_seen INTEGER, PRIMARY KEY(a, b));
+CREATE TABLE IF NOT EXISTS vehicle_sightings (ts INTEGER, vid TEXT);
+CREATE INDEX IF NOT EXISTS ix_vs_ts ON vehicle_sightings(ts);
 CREATE TABLE IF NOT EXISTS networks (
     bssid TEXT PRIMARY KEY, label TEXT, added INTEGER);
 """
@@ -142,6 +160,20 @@ def kismet_devices(cfg, since_ts):
         return json.load(resp)
 
 
+def kismet_get(cfg, path, fields=None, since=None):
+    """GET (or POST with a field list) against the Kismet REST API; returns parsed JSON."""
+    base = cfg.get("kismet", "url").rstrip("/")
+    cred = f"{cfg.get('kismet', 'user')}:{cfg.get('kismet', 'password')}".encode()
+    data = None
+    if fields is not None or since is not None:
+        payload = {"fields": fields} if fields is not None else {}
+        data = urllib.parse.urlencode({"json": json.dumps(payload)}).encode()
+    req = urllib.request.Request(base + path, data=data)
+    req.add_header("Authorization", "Basic " + base64.b64encode(cred).decode())
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.load(resp)
+
+
 def notify(cfg, db, title, message, priority="default", tags=""):
     """Record the alert, then deliver it to every configured channel.
 
@@ -187,12 +219,14 @@ def random_count(db, cfg, now):
     return row[0] or 0
 
 
-def ingest(db, d, now, home=frozenset()):
+def ingest(db, d, now, home=frozenset(), home_ssids=frozenset()):
     """Log one Kismet device record.
 
     `home` holds your own access-point BSSIDs. A client associated with one is part
     of your network: it is marked known and never treated as a rotating address
-    (phones use a stable per-network MAC while associated).
+    (phones use a stable per-network MAC while associated). The same goes for a device that
+    probes for one of your own SSIDs (`home_ssids`, case-folded): it is treated as yours.
+    Every probed SSID is recorded for link suggestions.
     """
     mac = d.get("kismet.device.base.macaddr")
     rssi = d.get("rssi")
@@ -201,7 +235,11 @@ def ingest(db, d, now, home=frozenset()):
     phy = d.get("kismet.device.base.phyname") or ""
     manuf = d.get("kismet.device.base.manuf") or ""
     name = d.get("kismet.device.base.name") or ""
-    at_home = 1 if (mac.lower() in home or (d.get("bssid") or "").lower() in home) else 0
+    ssids = identity.extract_ssids(d.get("probes"))
+    at_home = 1 if (mac.lower() in home or (d.get("bssid") or "").lower() in home
+                    or any(s.casefold() in home_ssids for s in ssids)) else 0
+    if ssids:
+        identity.record_probes(db, mac, ssids, now)
     rand = 0 if at_home else is_random(phy, mac, manuf)
     db.execute("INSERT INTO sightings VALUES(?,?,?,?,?)", (now, mac, phy, rssi, rand))
     db.execute(
@@ -219,7 +257,13 @@ def ingest(db, d, now, home=frozenset()):
 def purge(db, cfg, now):
     cutoff = now - cfg.getint("detect", "retention_days") * 86400
     db.execute("DELETE FROM sightings WHERE ts<?", (cutoff,))
-    db.execute("DELETE FROM devices WHERE known=0 AND last_seen<?", (cutoff,))
+    db.execute("DELETE FROM devices WHERE known=0 AND last_seen<? AND mac NOT IN "
+               "(SELECT ref FROM entity_members WHERE kind='device')", (cutoff,))
+    # Probed names of strangers are personal data: keep them only as long as the device record.
+    db.execute("DELETE FROM probes WHERE last_seen<? AND mac NOT IN "
+               "(SELECT ref FROM entity_members WHERE kind='device')", (cutoff,))
+    db.execute("DELETE FROM probes WHERE mac NOT IN (SELECT mac FROM devices)")
+    db.execute("DELETE FROM vehicle_sightings WHERE ts<?", (cutoff,))
     db.commit()
 
 
@@ -265,8 +309,12 @@ def run(cfg, db, once=False):
         last_poll = now
 
         home = home_set(cfg, db)  # re-read each poll so UI changes apply without a restart
+        home_ssids = identity.home_ssid_set(cfg, db) if cfg.getboolean(
+            "detect", "ssid_marks_known", fallback=True) else frozenset()
+        for name in identity.expire_entities(db, now):
+            log(f"entity expired: {name}")
         for d in devices:
-            row = ingest(db, d, now, home)
+            row = ingest(db, d, now, home, home_ssids)
             if row is None or mode == "learning" or quiet:
                 continue
             mac, phy, manuf, rssi, rand, known = row
@@ -319,6 +367,65 @@ def run(cfg, db, once=False):
 
 
 # ---------- commands ----------
+
+def cmd_doctor(cfg, db, args):
+    """Check the live Kismet instance against what Tripline expects. Run this on the Pi first."""
+    ok = lambda m: print("  ok    " + m)
+    bad = lambda m: print("  FAIL  " + m)
+    note = lambda m: print("  note  " + m)
+    print("Kismet connection")
+    try:
+        kismet_get(cfg, "/system/status.json")
+        ok(f"reachable at {cfg.get('kismet', 'url')}")
+    except Exception as exc:
+        bad(f"cannot reach Kismet: {exc}")
+        print("        Check that kismet is running, [kismet] url/user/password, and ~/.kismet/kismet_httpd.conf.")
+        return
+    print("Data sources")
+    try:
+        srcs = kismet_get(cfg, "/datasource/all_sources.json")
+        if not srcs:
+            bad("no data sources configured; check /etc/kismet/kismet_site.conf")
+        for src in srcs if isinstance(srcs, list) else []:
+            name = src.get("kismet.datasource.name") or "?"
+            iface = src.get("kismet.datasource.interface") or src.get("kismet.datasource.source_name") or "?"
+            running = src.get("kismet.datasource.running")
+            (ok if running else bad)(f"{name} ({iface}) {'running' if running else 'NOT running'}")
+    except Exception as exc:
+        note(f"could not list data sources: {exc}")
+    print("Devices seen in the last hour")
+    since = int(time.time()) - 3600
+    try:
+        devs = kismet_get(cfg, f"/devices/last-time/{since}/devices.json", fields=FIELDS)
+    except Exception as exc:
+        bad(f"device query failed: {exc}")
+        return
+    by_phy, with_rssi, with_bssid, with_probes, all_ssids = {}, 0, 0, 0, set()
+    for d in devs:
+        by_phy[d.get("kismet.device.base.phyname") or "?"] = by_phy.get(d.get("kismet.device.base.phyname") or "?", 0) + 1
+        with_rssi += isinstance(d.get("rssi"), int) and d.get("rssi") != 0
+        with_bssid += bool(d.get("bssid"))
+        ss = identity.extract_ssids(d.get("probes"))
+        with_probes += bool(ss)
+        all_ssids.update(ss)
+    print(f"  {len(devs)} devices: " + (", ".join(f"{k} {v}" for k, v in sorted(by_phy.items())) or "none"))
+    if not devs:
+        note("nothing heard yet; wait a minute, or check the adapters above")
+    (ok if with_rssi else bad)(f"signal strength (rssi) present on {with_rssi} devices"
+                               + ("" if with_rssi else " -> alert thresholds cannot work"))
+    (ok if with_bssid else note)(f"associated BSSID present on {with_bssid} devices"
+                                 + ("" if with_bssid else " (home_bssids has no effect until this appears; fine if no clients yet)"))
+    (ok if with_probes else note)(f"probed SSIDs present on {with_probes} devices ({len(all_ssids)} distinct names)"
+                                  + ("" if with_probes else " (expected on a quiet network: most modern phones send no named probes)"))
+    if not any("luetooth" in k for k in by_phy):
+        note("no Bluetooth devices yet; check the Bluetooth data source and `bluetoothctl list`")
+    if args.dump:
+        sample = kismet_get(cfg, f"/devices/last-time/{since}/devices.json", since=since)
+        with open(args.dump, "w") as fh:
+            json.dump(sample[:5], fh, indent=1)
+        print(f"Wrote {min(5, len(sample))} raw device records to {args.dump}.")
+        print("  They contain MAC addresses and names of nearby devices. Review before sharing.")
+
 
 def cmd_status(cfg, db, args):
     now = int(time.time())
@@ -417,6 +524,8 @@ def main():
     p = sub.add_parser("run", help="main loop")
     p.add_argument("--once", action="store_true", help="one poll cycle (testing)")
     sub.add_parser("status")
+    p = sub.add_parser("doctor", help="check Kismet and the fields Tripline relies on")
+    p.add_argument("--dump", metavar="FILE", help="also save 5 raw device records, for debugging")
     sub.add_parser("arm", help="end learning, mark baseline, switch to home mode")
     sub.add_parser("home")
     sub.add_parser("away")
@@ -437,7 +546,7 @@ def main():
         return
     {"status": cmd_status, "arm": cmd_arm, "home": cmd_mode("home"),
      "away": cmd_mode("away"), "guest": cmd_guest, "known": cmd_known,
-     "report": cmd_report}[args.cmd](cfg, db, args)
+     "report": cmd_report, "doctor": cmd_doctor}[args.cmd](cfg, db, args)
 
 
 if __name__ == "__main__":

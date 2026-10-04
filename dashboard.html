@@ -94,6 +94,21 @@ th{position:sticky;top:0;text-align:left;padding:8px;font-size:11px;letter-spaci
 td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
 td.mac{font-family:var(--mono);font-size:12px}
 td input{width:150px}
+.badge{display:inline-block;padding:1px 8px;border:1px solid var(--line);border-radius:999px;font:11px var(--mono);color:var(--dim);letter-spacing:.04em}
+.badge.high{border-color:var(--green);color:var(--green)}.badge.medium{border-color:var(--amber);color:var(--amber)}.badge.low{border-color:var(--line);color:var(--dim)}
+.badge.off{border-color:var(--red);color:var(--red)}
+.ecard{border:1px solid var(--line);background:var(--panel);border-radius:12px;padding:12px;margin-bottom:10px}
+.ecard h3{margin:0;font-size:15px}
+.mem{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:5px 0;border-top:1px solid var(--line);font-size:13px}
+.mem:first-of-type{border-top:0}
+.sug{border:1px solid var(--line);background:var(--panel);border-radius:12px;padding:12px;margin-bottom:10px}
+.pair{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:center}
+.pair .arrow{color:var(--accent);font-size:18px}
+@media (max-width:640px){.pair{grid-template-columns:1fr}.pair .arrow{display:none}}
+dialog{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:18px;max-width:420px;width:calc(100% - 32px)}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+dialog label{display:block;margin-top:10px;font-size:12px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase}
+dialog input,dialog select{width:100%;margin-top:4px}
 .hidden,[hidden]{display:none!important}
 </style>
 </head>
@@ -106,6 +121,7 @@ td input{width:150px}
   <nav role="tablist">
     <button role="tab" id="tab-dash" aria-selected="true">Dashboard</button>
     <button role="tab" id="tab-dev" aria-selected="false">Devices</button>
+    <button role="tab" id="tab-ent" aria-selected="false">Entities</button>
   </nav>
   <span id="clock"></span>
 </header>
@@ -191,6 +207,13 @@ td input{width:150px}
 </section>
 
 <section id="view-dev" class="card hidden">
+  <h2>My network names</h2>
+  <p class="dim" style="margin:0 0 8px">Your SSIDs (for example foofoo1, foofoo2). A device that probes for one of these is treated as yours. Add the name exactly as it appears.</p>
+  <div class="row" id="ssid-list" style="margin-bottom:8px"></div>
+  <div class="row" style="margin-bottom:18px">
+    <input type="text" id="ssid-in" placeholder="Network name" aria-label="Network name" maxlength="32">
+    <button class="btn primary" id="ssid-add">Add name</button>
+  </div>
   <h2>My networks</h2>
   <p class="dim" style="margin:0 0 8px">Access points and hotspots that are yours. The device is marked known, and any Wi-Fi client connected to it is marked known automatically and never counted as a rotating address. Add every BSSID your equipment broadcasts (one per SSID and band on many routers).</p>
   <div class="tablewrap"><table><tbody id="net-body"></tbody></table></div>
@@ -225,7 +248,37 @@ td input{width:150px}
     </table>
   </div>
 </section>
+
+<section id="view-ent" class="card hidden">
+  <h2>Suggested links</h2>
+  <p class="dim" style="margin:0 0 8px">Pairs that may belong to the same person, vehicle or household, based on shared probed network names, sensors heard together, and devices that appear in the same time windows. Suggestions are evidence, not proof. Nothing links until you accept it.</p>
+  <div id="sug-list"></div>
+  <h2 style="margin-top:20px">Entities</h2>
+  <div id="ent-list"></div>
+</section>
 </main>
+
+<dialog id="link-dlg">
+  <form method="dialog" id="link-form">
+    <h2 style="margin:0 0 4px" id="link-title">Link to entity</h2>
+    <div class="dim mono" id="link-what" style="overflow-wrap:anywhere"></div>
+    <label for="link-sel">Entity</label>
+    <select id="link-sel"></select>
+    <div id="link-new">
+      <label for="link-name">Name</label>
+      <input type="text" id="link-name" maxlength="40" placeholder="Bob, Plumber, Truck 2">
+      <label for="link-kind">Type</label>
+      <select id="link-kind"></select>
+      <label for="link-exp">Known for (days, blank = permanently)</label>
+      <input type="text" id="link-exp" inputmode="numeric" maxlength="4" placeholder="7">
+    </div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="btn" value="cancel" id="link-cancel">Cancel</button>
+      <button class="btn primary" id="link-ok" value="ok">Link</button>
+    </div>
+    <div class="dim" id="link-msg" style="margin-top:8px"></div>
+  </form>
+</dialog>
 
 <script>
 (() => {
@@ -261,13 +314,17 @@ function setTab(t) {
   tab = t;
   $('#view-dash').classList.toggle('hidden', t !== 'dash');
   $('#view-dev').classList.toggle('hidden', t !== 'dev');
+  $('#view-ent').classList.toggle('hidden', t !== 'ent');
   $('#tab-dash').setAttribute('aria-selected', t === 'dash');
   $('#tab-dev').setAttribute('aria-selected', t === 'dev');
+  $('#tab-ent').setAttribute('aria-selected', t === 'ent');
   if (t === 'dash') { resizeRadar(); resizeTl(); if (lastAct) drawActivity(lastAct); }
-  if (t === 'dev') { loadNetworks(); loadVehicles(); loadDevices(); }
+  if (t === 'dev') { loadSsids(); loadNetworks(); loadVehicles(); loadDevices(); }
+  if (t === 'ent') loadEntities();
 }
 $('#tab-dash').onclick = () => setTab('dash');
 $('#tab-dev').onclick = () => setTab('dev');
+$('#tab-ent').onclick = () => setTab('ent');
 
 /* ---------- radar ---------- */
 const canvas = $('#radar'), ctx = canvas.getContext('2d');
@@ -794,9 +851,127 @@ async function loadVehicles() {
     c4.appendChild(inp); tr.appendChild(c4);
     const c5 = el('td'); const b = el('button', 'btn ' + (v.known ? 'danger' : 'primary'), v.known ? 'Unmark' : 'Mark known');
     b.onclick = async () => { await post('/api/vehicles/known', { vid: v.vid, known: !v.known, label: inp.value }); loadVehicles(); };
-    c5.appendChild(b); tr.appendChild(c5); body.appendChild(tr);
+    c5.appendChild(b);
+    const lb = el('button', 'btn', 'Link'); lb.style.marginLeft = '6px'; lb.title = 'Add to a person or household';
+    lb.onclick = () => openLink('vehicle', v.vid, v.label || v.model);
+    c5.appendChild(lb); tr.appendChild(c5); body.appendChild(tr);
   }
   if (!d.vehicles.length) { const tr = el('tr'); const td = el('td', 'dim', 'No vehicle sensors heard yet.'); td.colSpan = 5; tr.appendChild(td); body.appendChild(tr); }
+}
+
+/* ---------- entities & links ---------- */
+const ago = t => t ? rel(Date.now() / 1000 - t) + ' ago' : 'never';
+const typeLabel = m => m.kind === 'vehicle' ? 'tyre sensor' : (m.phy || 'device');
+
+async function loadSsids() {
+  let d; try { d = await api('/api/ssids'); } catch (e) { return; }
+  const box = $('#ssid-list'); box.replaceChildren();
+  for (const s of d.from_config) box.appendChild(el('span', 'badge', s + ' (config)'));
+  for (const s of d.ssids) {
+    const b = el('button', 'btn danger', s + '  \u00d7'); b.title = 'Remove ' + s;
+    b.onclick = async () => { await post('/api/ssids/delete', { ssid: s }); loadSsids(); };
+    box.appendChild(b);
+  }
+  if (!d.ssids.length && !d.from_config.length) box.appendChild(el('span', 'dim', 'None yet.'));
+}
+$('#ssid-add').onclick = async () => {
+  const v = $('#ssid-in').value.trim(); if (!v) return;
+  try { await post('/api/ssids', { ssid: v }); $('#ssid-in').value = ''; loadSsids(); } catch (e) { /* invalid */ }
+};
+
+function evidenceText(ev) {
+  const out = [];
+  if (ev.ssid) out.push('Both probed for: ' + ev.ssid.ssids.join(', '));
+  if (ev.tpms) out.push('Tyre sensors heard together at least ' + ev.tpms.count + ' times');
+  if (ev.cooccur) out.push('Present in the same time windows ' + ev.cooccur.shared + ' times (' + Math.round(ev.cooccur.ratio * 100) + '% overlap)');
+  return out;
+}
+function side(m) {
+  const d = el('div'); d.appendChild(el('div', null, m.title));
+  d.appendChild(el('div', 'mono dim', typeLabel(m) + ' \u00b7 ' + m.ref)); d.appendChild(el('div', 'dim', 'last seen ' + ago(m.last_seen)));
+  return d;
+}
+
+async function loadEntities() {
+  let s, e;
+  try { [s, e] = await Promise.all([api('/api/suggestions'), api('/api/entities')]); } catch (x) { return; }
+  const sl = $('#sug-list'); sl.replaceChildren();
+  for (const x of s.suggestions) {
+    const card = el('div', 'sug');
+    const pair = el('div', 'pair');
+    if (x.members.length === 2) { pair.appendChild(side(x.members[0])); pair.appendChild(el('div', 'arrow', '\u21c4')); pair.appendChild(side(x.members[1])); }
+    else { pair.style.gridTemplateColumns = 'repeat(auto-fit,minmax(200px,1fr))'; for (const m of x.members) pair.appendChild(side(m)); }
+    card.appendChild(pair);
+    const meta = el('div', 'row'); meta.style.marginTop = '8px';
+    meta.appendChild(el('span', 'badge ' + x.level, x.level + ' confidence'));
+    for (const t of evidenceText(x.evidence)) meta.appendChild(el('span', 'dim', t));
+    card.appendChild(meta);
+    const act = el('div', 'row'); act.style.marginTop = '8px';
+    const existing = x.entities.length > 0;
+    const name = el('input'); name.type = 'text'; name.maxLength = 40; name.placeholder = existing ? 'adds to the existing entity' : 'Name (Bob, Truck...)';
+    name.disabled = existing;
+    const ok = el('button', 'btn primary', x.members.length > 2 ? 'Link all ' + x.members.length + ' as one entity' : 'Link as one entity');
+    const refs = x.members.map(m => ({ kind: m.kind, ref: m.ref }));
+    ok.onclick = async () => {
+      if (!existing && !name.value.trim()) { name.focus(); return; }
+      await post('/api/suggestions/accept', { members: refs, name: name.value, kind: 'household' });
+      loadEntities();
+    };
+    const no = el('button', 'btn', 'Not the same');
+    no.onclick = async () => { await post('/api/suggestions/dismiss', { members: refs }); loadEntities(); };
+    act.appendChild(name); act.appendChild(ok); act.appendChild(no); card.appendChild(act);
+    sl.appendChild(card);
+  }
+  if (!s.suggestions.length) sl.appendChild(el('div', 'dim', 'No suggestions yet. They appear as the system collects probed names and repeat visits.'));
+
+  const el_ = $('#ent-list'); el_.replaceChildren();
+  for (const n of e.entities) {
+    const card = el('div', 'ecard');
+    const head = el('div', 'row'); head.appendChild(el('h3', null, n.name)); head.appendChild(el('span', 'badge', n.kind));
+    if (!n.known) head.appendChild(el('span', 'badge off', 'not trusted'));
+    if (n.expires) head.appendChild(el('span', 'badge', (n.known ? 'known until ' : 'lapsed ') + new Date(n.expires * 1000).toLocaleDateString()));
+    const sp = el('span'); sp.style.flex = '1'; head.appendChild(sp);
+    head.appendChild(el('span', 'dim', 'last seen ' + ago(n.last_seen)));
+    const del = el('button', 'btn danger', 'Delete');
+    del.onclick = async () => { if (!confirm('Delete "' + n.name + '"? Its devices stay as they are but are no longer grouped.')) return; await post('/api/entities/delete', { id: n.id }); loadEntities(); };
+    head.appendChild(del); card.appendChild(head);
+    const list = el('div'); list.style.marginTop = '8px';
+    for (const m of n.members) {
+      const r = el('div', 'mem'); r.appendChild(el('span', null, m.label || m.ref));
+      r.appendChild(el('span', 'badge', typeLabel(m))); r.appendChild(el('span', 'mono dim', m.ref));
+      const sp2 = el('span'); sp2.style.flex = '1'; r.appendChild(sp2);
+      r.appendChild(el('span', 'dim', ago(m.last_seen)));
+      const rm = el('button', 'btn', 'Unlink'); rm.onclick = async () => { await post('/api/entities/member/delete', { kind: m.kind, ref: m.ref }); loadEntities(); };
+      r.appendChild(rm); list.appendChild(r);
+    }
+    if (!n.members.length) list.appendChild(el('div', 'dim', 'No members.'));
+    card.appendChild(list); el_.appendChild(card);
+  }
+  if (!e.entities.length) el_.appendChild(el('div', 'dim', 'No entities yet. Use Link on a device or vehicle, or accept a suggestion.'));
+}
+
+async function openLink(kind, ref, title) {
+  let e; try { e = await api('/api/entities'); } catch (x) { return; }
+  const dlg = $('#link-dlg'), sel = $('#link-sel'), kinds = $('#link-kind');
+  $('#link-what').textContent = title + '  ' + ref; $('#link-msg').textContent = '';
+  sel.replaceChildren(); sel.appendChild(Object.assign(el('option', null, 'New entity\u2026'), { value: 'new' }));
+  for (const n of e.entities) sel.appendChild(Object.assign(el('option', null, n.name + ' (' + n.kind + ')'), { value: String(n.id) }));
+  kinds.replaceChildren(); for (const k of e.kinds) kinds.appendChild(Object.assign(el('option', null, k), { value: k }));
+  $('#link-name').value = ''; $('#link-exp').value = '';
+  const sync = () => $('#link-new').classList.toggle('hidden', sel.value !== 'new');
+  sel.onchange = sync; sync();
+  $('#link-cancel').onclick = ev => { ev.preventDefault(); dlg.close(); };
+  $('#link-ok').onclick = async ev => {
+    ev.preventDefault();
+    const body = { entity_id: sel.value, kind, ref };
+    if (sel.value === 'new') {
+      if (!$('#link-name').value.trim()) { $('#link-msg').textContent = 'Give the entity a name.'; return; }
+      body.new = { name: $('#link-name').value, kind: kinds.value, expires_days: Number($('#link-exp').value) || null };
+    }
+    try { await post('/api/entities/member', body); dlg.close(); loadDevices(); loadVehicles(); if (tab === 'ent') loadEntities(); }
+    catch (x) { $('#link-msg').textContent = 'Could not link.'; }
+  };
+  dlg.showModal();
 }
 
 /* ---------- my networks ---------- */
@@ -844,7 +1019,10 @@ async function loadDevices() {
     const tr = el('tr');
     const c1 = el('td'); c1.appendChild(el('div', null, x.label || x.name || x.manuf || '-')); c1.appendChild(el('div', 'mono dim', x.mac));
     tr.appendChild(c1);
-    tr.appendChild(el('td', null, x.phy || '-'));
+    const ctype = el('td', null, x.phy || '-');
+    if (x.probe_count) { const pd = el('div', 'dim', x.probe_count + ' SSID' + (x.probe_count > 1 ? 's' : '')); pd.title = x.probe_list || ''; ctype.appendChild(pd); }
+    if (x.entity_id) ctype.appendChild(el('div', 'dim', 'linked'));
+    tr.appendChild(ctype);
     tr.appendChild(el('td', null, rel(now - x.last_seen) + ' ago'));
     tr.appendChild(el('td', 'mono', x.max_rssi ? x.max_rssi + ' dBm' : '-'));
     tr.appendChild(el('td', 'mono', String(x.seen_count)));
@@ -862,6 +1040,11 @@ async function loadDevices() {
       nb.style.marginLeft = '6px';
       nb.onclick = async () => { await post('/api/networks', { bssid: x.mac, label: inp.value }); loadNetworks(); loadDevices(); };
       c7.appendChild(nb);
+    }
+    if (!x.rand) {
+      const lb = el('button', 'btn', 'Link'); lb.style.marginLeft = '6px'; lb.title = 'Add to a person or household';
+      lb.onclick = () => openLink('device', x.mac, x.label || x.name || x.manuf || x.mac);
+      c7.appendChild(lb);
     }
     tr.appendChild(c7);
     body.appendChild(tr);

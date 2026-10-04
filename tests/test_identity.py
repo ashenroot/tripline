@@ -1,0 +1,354 @@
+import json
+import threading
+import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import identity
+import tpms
+import watcher
+import web
+from tests.helpers import make_cfg, rec, tmpdir
+
+H = {"X-Requested-With": "tripline"}
+NOW = 1_700_000_000
+
+
+def probe_rec(mac, ssids, **kw):
+    r = rec(mac, **kw)
+    r["probes"] = {str(i): {"dot11.probedssid.ssid": s} for i, s in enumerate(ssids)}
+    return r
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.t = tmpdir()
+        self.cfg = make_cfg(self.t.name)
+        self.db = watcher.db_connect(self.cfg)
+
+    def tearDown(self):
+        self.db.close()
+        self.t.cleanup()
+
+    def dev(self, mac, now=NOW, **kw):
+        watcher.ingest(self.db, rec(mac, **kw), now, frozenset())
+        self.db.commit()
+
+
+class SsidExtraction(unittest.TestCase):
+    def test_shapes(self):
+        self.assertEqual(identity.extract_ssids({"1": {"dot11.probedssid.ssid": "Cabin"}}), ["Cabin"])
+        self.assertEqual(identity.extract_ssids([{"dot11.probedssid.ssid": "A"}, {"dot11.probedssid.ssid": "B"}]), ["A", "B"])
+        self.assertEqual(identity.extract_ssids(["A", "A", "B"]), ["A", "B"])
+        self.assertEqual(identity.extract_ssids(None), [])
+        self.assertEqual(identity.extract_ssids({}), [])
+
+    def test_rejects_empty_and_oversized(self):
+        self.assertEqual(identity.extract_ssids(["", "   ", "x" * 40]), [])
+
+    def test_strips_control_characters(self):
+        self.assertEqual(identity.extract_ssids(["Ca\x00bin\n"]), ["Cabin"])
+
+    def test_common_names(self):
+        self.assertTrue(identity.is_common("xfinitywifi"))
+        self.assertTrue(identity.is_common("NETGEAR42"))
+        self.assertFalse(identity.is_common("Smith_Cabin_5G"))
+
+
+class HomeSsid(Base):
+    def test_probe_for_home_ssid_marks_known_and_not_random(self):
+        home = frozenset({"foofoo1"})
+        watcher.ingest(self.db, probe_rec("da:11:22:33:44:55", ["FooFoo1", "Other"]), NOW, frozenset(), home)
+        self.assertEqual(self.db.execute("SELECT rand, known FROM devices").fetchone(), (0, 1))
+
+    def test_probe_for_other_ssid_does_not(self):
+        watcher.ingest(self.db, probe_rec("da:11:22:33:44:55", ["Other"]), NOW, frozenset(), frozenset({"foofoo1"}))
+        self.assertEqual(self.db.execute("SELECT rand, known FROM devices").fetchone(), (1, 0))
+
+    def test_home_ssid_set_merges_config_and_ui(self):
+        cfg = make_cfg(self.t.name, detect={"home_ssids": "FooFoo1, FooFoo2"})
+        self.db.execute("INSERT INTO home_ssids VALUES('FooFoo3', 1)")
+        self.assertEqual(identity.home_ssid_set(cfg, self.db), {"foofoo1", "foofoo2", "foofoo3"})
+
+    def test_probes_recorded_and_purged_with_device(self):
+        watcher.ingest(self.db, probe_rec("da:11:22:33:44:55", ["Cabin"]), NOW, frozenset())
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM probes").fetchone()[0], 1)
+        watcher.purge(self.db, self.cfg, NOW + 90 * 86400)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM probes").fetchone()[0], 0)
+
+
+class SsidSuggestions(Base):
+    def fill_population(self, n=14):
+        for i in range(n):
+            watcher.ingest(self.db, probe_rec(f"da:00:00:00:00:{i:02x}", [f"Noise{i}", "xfinitywifi"]), NOW, frozenset())
+
+    def test_shared_rare_ssids_suggest_a_link(self):
+        self.fill_population()
+        watcher.ingest(self.db, probe_rec("da:aa:aa:aa:aa:01", ["Smith_Cabin", "Lakehouse_5G", "xfinitywifi"]), NOW, frozenset())
+        watcher.ingest(self.db, probe_rec("da:aa:aa:aa:aa:02", ["Smith_Cabin", "Lakehouse_5G"]), NOW + 3600, frozenset())
+        sug = identity.suggestions(self.db, self.cfg, NOW + 7200)
+        pairs = [(s["a"]["ref"], s["b"]["ref"]) for s in sug]
+        self.assertIn(("da:aa:aa:aa:aa:01", "da:aa:aa:aa:aa:02"), pairs)
+        self.assertIn(sug[0]["level"], ("medium", "high"))
+
+    def test_common_ssids_alone_suggest_nothing(self):
+        self.fill_population()
+        watcher.ingest(self.db, probe_rec("da:aa:aa:aa:aa:01", ["xfinitywifi", "attwifi"]), NOW, frozenset())
+        watcher.ingest(self.db, probe_rec("da:aa:aa:aa:aa:02", ["xfinitywifi", "attwifi"]), NOW + 3600, frozenset())
+        self.assertEqual(identity.suggestions(self.db, self.cfg, NOW + 7200), [])
+
+    def test_home_ssids_are_ignored_for_matching(self):
+        self.fill_population()
+        self.db.execute("INSERT INTO home_ssids VALUES('FooFoo1', 1)")
+        for m in ("da:aa:aa:aa:aa:01", "da:aa:aa:aa:aa:02"):
+            watcher.ingest(self.db, probe_rec(m, ["FooFoo1"]), NOW, frozenset())
+        self.assertEqual(identity.suggestions(self.db, self.cfg, NOW + 7200), [])
+
+    def test_simultaneous_devices_are_not_one_device(self):
+        self.fill_population()
+        for k in range(10):
+            for m in ("da:aa:aa:aa:aa:01", "da:aa:aa:aa:aa:02"):
+                watcher.ingest(self.db, probe_rec(m, ["Smith_Cabin", "Lakehouse_5G"]), NOW + k * 60, frozenset())
+        self.assertEqual(identity.suggestions(self.db, self.cfg, NOW + 1000), [])
+
+    def test_dismissed_pair_not_suggested_again(self):
+        self.fill_population()
+        watcher.ingest(self.db, probe_rec("da:aa:aa:aa:aa:01", ["Smith_Cabin", "Lakehouse_5G"]), NOW, frozenset())
+        watcher.ingest(self.db, probe_rec("da:aa:aa:aa:aa:02", ["Smith_Cabin", "Lakehouse_5G"]), NOW + 3600, frozenset())
+        s = identity.suggestions(self.db, self.cfg, NOW + 7200)[0]
+        identity.dismiss(self.db, f"device:{s['a']['ref']}", f"device:{s['b']['ref']}")
+        self.assertEqual(identity.suggestions(self.db, self.cfg, NOW + 7200), [])
+
+
+class Entities(Base):
+    def test_link_marks_members_known_and_labels(self):
+        self.dev("00:10:20:30:40:50")
+        tpms.record(self.cfg, self.db, tpms.parse(json.dumps({"model": "Toyota", "type": "TPMS", "id": "a1"})), NOW, {})
+        eid = identity.create_entity(self.db, "Bob", "regular")
+        identity.add_member(self.db, eid, "device", "00:10:20:30:40:50")
+        identity.add_member(self.db, eid, "vehicle", "Toyota:a1")
+        self.assertEqual(self.db.execute("SELECT known,label FROM devices").fetchone(), (1, "Bob"))
+        self.assertEqual(self.db.execute("SELECT known,label FROM vehicles").fetchone(), (1, "Bob"))
+
+    def test_existing_label_is_kept(self):
+        self.dev("00:10:20:30:40:50")
+        self.db.execute("UPDATE devices SET label='Watch'")
+        eid = identity.create_entity(self.db, "Bob")
+        identity.add_member(self.db, eid, "device", "00:10:20:30:40:50")
+        self.assertEqual(self.db.execute("SELECT label FROM devices").fetchone()[0], "Watch")
+
+    def test_watch_entity_leaves_members_unknown(self):
+        self.dev("00:10:20:30:40:50")
+        eid = identity.create_entity(self.db, "Tuesday truck", "other", known=False)
+        identity.add_member(self.db, eid, "device", "00:10:20:30:40:50")
+        self.assertEqual(self.db.execute("SELECT known FROM devices").fetchone()[0], 0)
+
+    def test_visitor_expires_back_to_unknown(self):
+        self.dev("00:10:20:30:40:50")
+        eid = identity.create_entity(self.db, "Plumber", "contractor", expires_days=7, now=NOW)
+        identity.add_member(self.db, eid, "device", "00:10:20:30:40:50")
+        self.assertEqual(identity.expire_entities(self.db, NOW + 6 * 86400), [])
+        self.assertEqual(identity.expire_entities(self.db, NOW + 8 * 86400), ["Plumber"])
+        self.assertEqual(self.db.execute("SELECT known FROM devices").fetchone()[0], 0)
+        self.assertEqual(identity.expire_entities(self.db, NOW + 9 * 86400), [])
+
+    def test_bad_input(self):
+        with self.assertRaises(ValueError):
+            identity.create_entity(self.db, "  ")
+        with self.assertRaises(ValueError):
+            identity.create_entity(self.db, "x", kind="nope")
+        eid = identity.create_entity(self.db, "x")
+        with self.assertRaises(KeyError):
+            identity.add_member(self.db, eid, "device", "00:00:00:00:00:00")
+
+    def test_link_pair_creates_and_merges(self):
+        for m in ("00:10:20:30:40:01", "00:10:20:30:40:02", "00:10:20:30:40:03"):
+            self.dev(m)
+        a, b, c = ({"kind": "device", "ref": f"00:10:20:30:40:0{i}"} for i in (1, 2, 3))
+        e1 = identity.link_pair(self.db, a, b, name="Bob")
+        e2 = identity.create_entity(self.db, "Other")
+        identity.add_member(self.db, e2, "device", c["ref"])
+        merged = identity.link_pair(self.db, b, c)
+        self.assertEqual(merged, e1)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM entities").fetchone()[0], 1)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM entity_members WHERE entity_id=?", (e1,)).fetchone()[0], 3)
+
+    def test_entity_view_last_seen_spans_members(self):
+        self.dev("00:10:20:30:40:50", now=NOW)
+        tpms.record(self.cfg, self.db, tpms.parse(json.dumps({"model": "T", "type": "TPMS", "id": "1"})), NOW + 500, {})
+        eid = identity.create_entity(self.db, "Bob")
+        identity.add_member(self.db, eid, "device", "00:10:20:30:40:50")
+        identity.add_member(self.db, eid, "vehicle", "T:1")
+        self.assertEqual(identity.entity_view(self.db)[0]["last_seen"], NOW + 500)
+
+    def test_purge_keeps_entity_members(self):
+        self.dev("00:10:20:30:40:50")
+        eid = identity.create_entity(self.db, "Bob", known=False)
+        identity.add_member(self.db, eid, "device", "00:10:20:30:40:50")
+        watcher.purge(self.db, self.cfg, NOW + 365 * 86400)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM devices").fetchone()[0], 1)
+
+
+class TpmsAndCooccurrence(Base):
+    def test_tpms_pair_suggestion_after_repeated_bursts(self):
+        recent = {}
+        for burst in range(5):
+            t0 = NOW + burst * 600
+            for k, sid in enumerate(("a1", "a2", "a3", "a4")):
+                tpms.record(self.cfg, self.db, tpms.parse(json.dumps(
+                    {"model": "Toyota", "type": "TPMS", "id": sid})), t0 + k * 5, {}, recent)
+        sug = identity.suggestions(self.db, self.cfg, NOW + 4000)
+        self.assertEqual(len(sug), 1)  # four sensors fold into one suggestion
+        self.assertEqual(sorted(m["ref"] for m in sug[0]["members"]), ["Toyota:a1", "Toyota:a2", "Toyota:a3", "Toyota:a4"])
+        self.assertNotIn("cooccur", sug[0]["evidence"])
+
+    def test_separate_cars_do_not_pair(self):
+        recent = {}
+        for burst in range(6):
+            tpms.record(self.cfg, self.db, tpms.parse(json.dumps({"model": "A", "type": "TPMS", "id": "1"})), NOW + burst * 3600, {}, recent)
+            tpms.record(self.cfg, self.db, tpms.parse(json.dumps({"model": "B", "type": "TPMS", "id": "2"})), NOW + burst * 3600 + 1800, {}, recent)
+        self.assertEqual(identity.suggestions(self.db, self.cfg, NOW + 6 * 3600), [])
+
+    def test_cooccurrence_links_phone_and_watch(self):
+        for visit in range(8):
+            for k in range(3):
+                t = NOW + visit * 86400 + k * 60
+                for m in ("00:aa:00:00:00:01", "00:aa:00:00:00:02"):
+                    watcher.ingest(self.db, rec(m), t, frozenset())
+        # a household device that is always around carries no signal
+        for k in range(0, 8 * 86400, 300):
+            watcher.ingest(self.db, rec("00:bb:00:00:00:01"), NOW + k, frozenset())
+        self.db.commit()
+        sug = identity.suggestions(self.db, self.cfg, NOW + 9 * 86400)
+        refs = {(s["a"]["ref"], s["b"]["ref"]) for s in sug}
+        self.assertIn(("device:00:aa:00:00:00:01".split(":", 1)[1], "00:aa:00:00:00:02"), refs)
+        self.assertEqual(len(refs), 1)
+
+
+class Groups(Base):
+    def test_link_group_links_all_and_dismiss_group(self):
+        macs = [f"00:10:20:30:40:0{i}" for i in range(4)]
+        for m in macs:
+            self.dev(m)
+        members = [{"kind": "device", "ref": m} for m in macs]
+        eid = identity.link_group(self.db, members, name="Car")
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM entity_members WHERE entity_id=?", (eid,)).fetchone()[0], 4)
+        identity.dismiss_group(self.db, members)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM dismissed").fetchone()[0], 6)
+        with self.assertRaises(ValueError):
+            identity.link_group(self.db, members[:1])
+
+
+class Api(Base):
+    def setUp(self):
+        super().setUp()
+        web._cfg = self.cfg
+        self.client = web.app.test_client()
+
+    def tearDown(self):
+        web._cfg = None
+        super().tearDown()
+
+    def test_member_with_new_entity(self):
+        self.dev("00:10:20:30:40:50")
+        r = self.client.post("/api/entities/member", headers=H, json={
+            "entity_id": "new", "new": {"name": "Bob", "kind": "regular", "expires_days": 7},
+            "kind": "device", "ref": "00:10:20:30:40:50"})
+        self.assertEqual(r.status_code, 200)
+        e = self.client.get("/api/entities").get_json()["entities"][0]
+        self.assertEqual((e["name"], e["kind"], e["known"]), ("Bob", "regular", 1))
+        self.assertIsNotNone(e["expires"])
+        r = self.client.post("/api/entities/member", headers=H, json={
+            "entity_id": "new", "new": {"name": "X", "kind": "bogus"}, "kind": "device", "ref": "00:10:20:30:40:50"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_entity_flow_ok(self):
+        self.dev("00:10:20:30:40:50")
+        eid = self.client.post("/api/entities", headers=H, json={"name": "Bob", "kind": "household"}).get_json()["id"]
+        r = self.client.post("/api/entities/member", headers=H,
+                             json={"entity_id": eid, "kind": "device", "ref": "00:10:20:30:40:50"})
+        self.assertEqual(r.status_code, 200)
+        e = self.client.get("/api/entities").get_json()["entities"]
+        self.assertEqual((e[0]["name"], len(e[0]["members"])), ("Bob", 1))
+        self.assertEqual(self.client.post("/api/entities/member", headers=H,
+                         json={"entity_id": eid, "kind": "device", "ref": "ff:ff:ff:ff:ff:ff"}).status_code, 404)
+        self.client.post("/api/entities/delete", headers=H, json={"id": eid})
+        self.assertEqual(self.client.get("/api/entities").get_json()["entities"], [])
+
+    def test_validation_and_csrf(self):
+        self.assertEqual(self.client.post("/api/entities", headers=H, json={"name": ""}).status_code, 400)
+        self.assertEqual(self.client.post("/api/entities", json={"name": "x"}).status_code, 403)
+        self.assertEqual(self.client.post("/api/ssids", headers=H, json={"ssid": ""}).status_code, 400)
+
+    def test_ssid_list_and_devices_probe_info(self):
+        self.client.post("/api/ssids", headers=H, json={"ssid": "FooFoo1"})
+        self.assertEqual(self.client.get("/api/ssids").get_json()["ssids"], ["FooFoo1"])
+        watcher.ingest(self.db, probe_rec("00:10:20:30:40:50", ["Cabin"]), NOW, frozenset())
+        self.db.commit()
+        d = self.client.get("/api/devices?filter=all").get_json()["devices"][0]
+        self.assertEqual((d["probe_count"], d["probe_list"]), (1, "Cabin"))
+        self.client.post("/api/ssids/delete", headers=H, json={"ssid": "FooFoo1"})
+        self.assertEqual(self.client.get("/api/ssids").get_json()["ssids"], [])
+
+    def test_suggestion_accept_and_dismiss(self):
+        for m in ("00:10:20:30:40:01", "00:10:20:30:40:02"):
+            self.dev(m)
+        a = {"kind": "device", "ref": "00:10:20:30:40:01"}
+        b = {"kind": "device", "ref": "00:10:20:30:40:02"}
+        r = self.client.post("/api/suggestions/accept", headers=H, json={"a": a, "b": b, "name": "Bob"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.client.post("/api/suggestions/accept", headers=H, json={"a": a}).status_code, 400)
+        self.assertEqual(self.client.post("/api/suggestions/accept", headers=H,
+                                          json={"members": [a], "name": "x"}).status_code, 400)
+        self.assertEqual(self.client.post("/api/suggestions/dismiss", headers=H, json={"a": a, "b": b}).status_code, 200)
+        self.assertEqual(self.client.get("/api/suggestions").status_code, 200)
+
+
+class Doctor(Base):
+    def test_doctor_reports_fields(self):
+        devs = [
+            {"kismet.device.base.macaddr": "aa:bb:cc:00:00:01", "kismet.device.base.phyname": "IEEE802.11", "rssi": -50,
+             "bssid": "aa:bb:cc:00:00:02", "probes": {"1": {"dot11.probedssid.ssid": "Cabin"}}},
+            {"kismet.device.base.macaddr": "aa:bb:cc:00:00:03", "kismet.device.base.phyname": "Bluetooth", "rssi": -70},
+        ]
+
+        class H_(BaseHTTPRequestHandler):
+            def reply(self, obj):
+                b = json.dumps(obj).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+
+            def do_GET(self):
+                self.reply([{"kismet.datasource.name": "wifi", "kismet.datasource.interface": "wlan1",
+                             "kismet.datasource.running": 1}] if "datasource" in self.path else {})
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.reply(devs)
+
+            def log_message(self, *a):
+                pass
+
+        srv = HTTPServer(("127.0.0.1", 0), H_)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close); self.addCleanup(srv.shutdown)
+        cfg = make_cfg(self.t.name, kismet={"url": f"http://127.0.0.1:{srv.server_port}"})
+        import io, contextlib, argparse
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            watcher.cmd_doctor(cfg, self.db, argparse.Namespace(dump=None))
+        out = buf.getvalue()
+        self.assertIn("wifi (wlan1) running", out)
+        self.assertIn("2 devices", out)
+        self.assertIn("probed SSIDs present on 1 devices (1 distinct", out)
+        self.assertNotIn("FAIL", out)
+
+    def test_doctor_unreachable(self):
+        cfg = make_cfg(self.t.name, kismet={"url": "http://127.0.0.1:9"})
+        import io, contextlib, argparse
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            watcher.cmd_doctor(cfg, self.db, argparse.Namespace(dump=None))
+        self.assertIn("FAIL", buf.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()
