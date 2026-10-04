@@ -16,3 +16,4 @@ jobs:
           node-version: 20
       - run: pip install -r requirements.txt
       - run: python -m unittest discover -s tests -t . -v
+      - run: bash -n install.sh

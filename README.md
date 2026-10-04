@@ -38,32 +38,49 @@ Reports and fixes from real hardware are the most useful contribution right now.
   arbitrary; one sensor cannot determine bearing), 24-hour activity strip, live feed, and a
   device manager.
 
-## Install (Raspberry Pi OS)
+## Install (Raspberry Pi OS, Debian, Ubuntu)
 
-1. **Kismet.** Install from the official Kismet apt repository (kismetwireless.net, docs,
-   installing), choose the suid-root install, and add your user to the `kismet` group.
-2. **Kismet login.** Create `~/.kismet/kismet_httpd.conf` with `httpd_username` and
-   `httpd_password`.
-3. **Data sources.** `sudo cp examples/kismet_site.conf /etc/kismet/` and set your Wi-Fi
-   interface name (`iw dev`).
-4. **Tripline.**
-   ```
-   sudo mkdir -p /opt/tripline/sources /etc/tripline /var/lib/tripline
-   sudo chown $USER /var/lib/tripline
-   sudo apt install python3-flask
-   sudo cp watcher.py web.py known_sync.py dashboard.html /opt/tripline/
-   sudo cp sources/*.py /opt/tripline/sources/
-   sudo cp config.example.ini /etc/tripline/config.ini
-   sudo chmod 600 /etc/tripline/config.ini
-   sudo nano /etc/tripline/config.ini
-   ```
-5. **Services.** Copy `systemd/*.service` to `/etc/systemd/system/`, change `User=`, then
-   `sudo systemctl enable --now kismet tripline-watcher tripline-web` (add `tripline-sync` if you use a
-   known-device source).
-6. **Learn, then arm.** Leave it in `learning` mode for 1-2 weeks, then press Arm in the UI
-   or run `python3 /opt/tripline/watcher.py arm`.
+```
+git clone https://github.com/ashenroot/tripline.git
+cd tripline
+sudo ./install.sh
+```
+
+The script installs Kismet from the official apt repository, installs Tripline to
+`/opt/tripline`, creates a `tripline` service user, writes `/etc/tripline/config.ini` with
+generated Kismet credentials, points Kismet at your monitor-mode Wi-Fi adapter and the
+built-in Bluetooth, and enables the `kismet`, `tripline-watcher` and `tripline-web`
+services. Re-running it upgrades the code and keeps your config and database.
+
+| Option | Effect |
+|---|---|
+| `--wifi-iface wlan1` | Choose the monitor adapter (default: the one adapter that is not carrying your default route, else it asks) |
+| `--web-bind ADDR` / `--web-port N` | Move the web UI; a non-loopback address gets a generated password, shown once |
+| `--ntfy-topic auto` | Turn on ntfy alerts with a generated random topic |
+| `--no-kismet` | Use your own Kismet install |
+| `--no-packages` | Skip apt (other distros: install Kismet and Flask yourself first) |
+| `--no-services` | Copy files only |
+| `--uninstall [--purge]` | Remove services and code; `--purge` also removes config, data and the user |
+
+Packaged Kismet builds exist for Debian bookworm/trixie (amd64, arm64) and several Ubuntu
+releases; 32-bit Raspberry Pi OS is not on Kismet's list. The script's handling of Kismet's
+suid-root prompt (a debconf answer) has not been verified on a real device.
+
+Afterwards leave it in `learning` mode for 1-2 weeks, then press Arm in the web UI or run
+`python3 /opt/tripline/watcher.py arm`.
 
 `config.ini` holds secrets and is git-ignored. Never commit it.
+
+### Manual install
+
+1. Install Kismet from the official apt repository (kismetwireless.net, packages), choose
+   suid-root helpers, and put the user that runs it in the `kismet` group.
+2. Create `~/.kismet/kismet_httpd.conf` for that user with `httpd_username` and `httpd_password`.
+3. `sudo cp examples/kismet_site.conf /etc/kismet/` and set your Wi-Fi interface (`iw dev`).
+4. Copy `watcher.py web.py known_sync.py dashboard.html` and `sources/` to `/opt/tripline`,
+   copy `config.example.ini` to `/etc/tripline/config.ini` and edit it.
+5. Copy `systemd/*.service` to `/etc/systemd/system/`, set `User=`, then
+   `sudo systemctl enable --now kismet tripline-watcher tripline-web`.
 
 ## Known-device sources
 
