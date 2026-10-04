@@ -32,6 +32,8 @@ Reports and fixes from real hardware are the most useful contribution right now.
 - **Your own network** is excluded from the noise. Clients associated with your access
   points (`home_bssids` in the config, or the My networks box in the Devices tab) and devices from a known-device source (UniFi, a text file, or your
   own plugin) are marked known automatically. Hand edits in the UI always win.
+- **Vehicles:** with an RTL-SDR dongle, tyre-pressure sensor IDs identify cars arriving at the
+  property (see Vehicle detection below).
 - **Modes:** `learning` (log only), `home`, `away`, plus a timed guest window that
   suppresses alerts.
 - **Dashboard:** signal-over-time timeline and radar (direction on the radar is
@@ -99,8 +101,12 @@ and leaving, and does not see parked ones.
 - The installer enables this when it finds a dongle, installs `rtl-433`, and blacklists the
   kernel TV-tuner driver that otherwise claims the device (a reboot or re-plug may be needed).
   Re-run `install.sh` after plugging a dongle in later.
-- A sensor's band is not known in advance, so the default watches 315 MHz and 433.92 MHz. One dongle hops between them every `hop_seconds` (default 10), so each band is covered about half the time and a short drive past can be missed. Two dongles, one per band, give full coverage. `command` replaces
-  the whole decoder command, and `tpms.py run --stdin` reads `rtl_433` JSON from a pipe.
+- A sensor's band is not known in advance, so the default watches 315 MHz and 433.92 MHz.
+  One dongle hops between them every `hop_seconds` (default 10), so each band is covered about
+  half the time and a short drive past can be missed. Two dongles, one per band, give full
+  coverage.
+- `[vehicles] command` replaces the whole decoder command, and `tpms.py run --stdin` reads
+  `rtl_433` JSON from a pipe.
 - Range is short. A road several hundred feet away is unlikely to register, which is the
   point; a sensor on your own driveway should.
 
