@@ -111,7 +111,11 @@ if [ "$UNINSTALL" = 1 ]; then
   fi
   rm -f "$UNIT_DIR"/tripline-{watcher,web,sync,tpms}.service "$UNIT_DIR"/kismet.service
   have_systemd && systemctl daemon-reload
-  rm -rf "$PREFIX"
+  if [ "$(realpath "$SRC")" = "$(realpath -m "$PREFIX")" ] || [ -d "$PREFIX/.git" ]; then
+    say "Kept $PREFIX because it is a git checkout; delete it yourself if you want it gone."
+  else
+    rm -rf "$PREFIX"
+  fi
   if [ "$PURGE" = 1 ]; then
     rm -rf "$ETC_DIR" "$DATA_DIR" "$MODPROBE_DIR/blacklist-tripline-rtl.conf"
     id "$SVC_USER" >/dev/null 2>&1 && userdel "$SVC_USER" 2>/dev/null || true
@@ -203,10 +207,15 @@ if [ "$SDR" = 1 ]; then
 fi
 
 # ---------------------------------------------------------------- code
-say "Installing code to $PREFIX"
-install -d "$PREFIX" "$PREFIX/sources"
-install -m 0644 "$SRC"/watcher.py "$SRC"/web.py "$SRC"/known_sync.py "$SRC"/tpms.py "$SRC"/identity.py "$SRC"/dashboard.html "$PREFIX"/
-install -m 0644 "$SRC"/sources/*.py "$PREFIX/sources/"
+if [ "$(realpath "$SRC")" = "$(realpath -m "$PREFIX")" ]; then
+  say "Running from $PREFIX already; using the files in place"
+  chmod -R go+rX "$PREFIX"
+else
+  say "Installing code to $PREFIX"
+  install -d "$PREFIX" "$PREFIX/sources"
+  install -m 0644 "$SRC"/watcher.py "$SRC"/web.py "$SRC"/known_sync.py "$SRC"/tpms.py "$SRC"/identity.py "$SRC"/dashboard.html "$PREFIX"/
+  install -m 0644 "$SRC"/sources/*.py "$PREFIX/sources/"
+fi
 
 install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" "$DATA_DIR"
 install -d -m 0750 "$ETC_DIR"
