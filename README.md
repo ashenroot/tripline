@@ -397,6 +397,7 @@ Restart with `sudo systemctl restart tripline-watcher tripline-web` after editin
 | `source.unifi.api_key` or `username` / `password` | An API key (Network 10.1+) or a local non-SSO, no-MFA read-only account. |
 | `source.unifi.verify_tls` | `false` accepts a self-signed certificate. |
 | `source.unifi.include` | `all` for every client the controller knows, `named` for clients you gave a name. |
+| `source.unifi.max_age_days` | Skip clients UniFi has not seen for this many days (default 30, `0` keeps everything). UniFi remembers every client it has ever seen, so without this old gear stays known forever. Clients skipped this way stop being known on the next sync, and Tripline deletes them once they have also been unheard for `retention_days`. A client with no last-seen time in UniFi is kept. |
 
 ## Vehicle detection (RTL-SDR)
 

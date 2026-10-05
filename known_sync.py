@@ -63,12 +63,15 @@ def apply(db, name, devs, now=None):
 def sync_once(cfg, db):
     for name, section in source_sections(cfg):
         try:
-            devs = sources.load(name, section).devices()
+            src = sources.load(name, section)
+            devs = src.devices()
         except Exception as exc:
             log(f"sync {name}: failed, nothing changed ({exc})")
             continue
         a, r, l = apply(db, name, devs)
-        log(f"sync {name}: {len(devs)} listed, {a} added, {r} revoked")
+        idle = getattr(src, "skipped_idle", 0)
+        log(f"sync {name}: {len(devs)} listed, {a} added, {r} revoked"
+            + (f", {idle} skipped as idle" if idle else ""))
 
 
 def main():

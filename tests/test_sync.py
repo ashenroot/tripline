@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -150,6 +151,41 @@ class UnifiMock(unittest.TestCase):
         url, _ = self.serve()
         devs = unifi.Source({"url": url, "api_key": "k", "include": "named"}).devices()
         self.assertEqual([d["mac"] for d in devs], [MAC1])
+
+    def with_ages(self, ages, **cfg):
+        now = time.time()
+        self.CLIENTS = [{"mac": m, "name": m[-2:], **({} if a is None else {"last_seen": now - a * 86400})}
+                        for m, a in zip((MAC1, MAC2, MAC3), ages)]
+        url, _ = self.serve()
+        s = unifi.Source({"url": url, "api_key": "k", **cfg})
+        return s, [d["mac"] for d in s.devices()]
+
+    def test_idle_clients_are_skipped_by_default(self):
+        s, macs = self.with_ages([2, 45, 400])
+        self.assertEqual(macs, [MAC1])
+        self.assertEqual(s.skipped_idle, 2)
+
+    def test_max_age_is_configurable_and_zero_keeps_all(self):
+        self.assertEqual(self.with_ages([2, 45, 400], max_age_days="60")[1], [MAC1, MAC2])
+        self.assertEqual(self.with_ages([2, 45, 400], max_age_days="0")[1], [MAC1, MAC2, MAC3])
+
+    def test_client_without_last_seen_is_kept(self):
+        self.assertEqual(self.with_ages([None, 45, None])[1], [MAC1, MAC3])
+
+    def test_bad_max_age_is_a_clear_error(self):
+        with self.assertRaises(RuntimeError):
+            unifi.Source({"url": "http://x", "api_key": "k", "max_age_days": "soon"})
+
+    def test_idle_client_is_revoked_on_next_sync(self):
+        s, macs = self.with_ages([2, 2, 2])
+        t = tmpdir()
+        self.addCleanup(t.cleanup)
+        db = watcher.db_connect(make_cfg(t.name))
+        self.addCleanup(db.close)
+        known_sync.apply(db, "unifi", [{"mac": m, "label": None} for m in macs])
+        s2, macs2 = self.with_ages([2, 45, 2])
+        _, revoked, _ = known_sync.apply(db, "unifi", [{"mac": m, "label": None} for m in macs2])
+        self.assertEqual(revoked, 1)
 
     def test_bad_login_raises(self):
         url, _ = self.serve()

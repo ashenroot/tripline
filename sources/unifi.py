@@ -14,10 +14,12 @@ not been verified against every Network version.
     password =
     verify_tls = false                 # Cloud Keys use self-signed certificates
     include = all                      # all | named  (named = only clients you gave a name)
+    max_age_days = 30                  # skip clients the controller has not seen for this long; 0 = keep all
 """
 import http.cookiejar
 import json
 import ssl
+import time
 import urllib.request
 
 from . import clean_label, norm_mac
@@ -31,6 +33,11 @@ class Source:
         self.user = cfg.get("username", "")
         self.pw = cfg.get("password", "")
         self.named_only = cfg.get("include", "all").lower() == "named"
+        try:
+            self.max_age_days = max(0, int(str(cfg.get("max_age_days", "30")).strip() or 30))
+        except ValueError:
+            raise RuntimeError("max_age_days must be a whole number of days (0 keeps every client)")
+        self.skipped_idle = 0
         ctx = ssl.create_default_context()
         if str(cfg.get("verify_tls", "false")).lower() not in ("1", "true", "yes", "on"):
             ctx.check_hostname = False
@@ -81,12 +88,20 @@ class Source:
         else:
             raise RuntimeError(f"UniFi client list failed: {last}")
         out = []
+        self.skipped_idle = 0
+        cutoff = time.time() - self.max_age_days * 86400 if self.max_age_days else None
         for r in rows:
             mac = norm_mac(r.get("mac"))
             if not mac:
                 continue
             name = clean_label(r.get("name") or r.get("hostname"))
             if self.named_only and not r.get("name"):
+                continue
+            # UniFi remembers every client it has ever seen. A client with no usable
+            # last_seen is kept, because we cannot tell that it is old.
+            seen = r.get("last_seen")
+            if cutoff and isinstance(seen, (int, float)) and 0 < seen < cutoff:
+                self.skipped_idle += 1
                 continue
             out.append({"mac": mac, "label": name})
         return out
