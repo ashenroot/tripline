@@ -106,7 +106,7 @@ td input{width:150px}
 .pair .arrow{color:var(--accent);font-size:18px}
 @media (max-width:640px){.pair{grid-template-columns:1fr}.pair .arrow{display:none}}
 dialog{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:18px;max-width:420px;width:calc(100% - 32px)}
-#dev-dlg,#alert-dlg{max-width:720px;max-height:calc(100vh - 40px);overflow:auto}
+#dev-dlg,#alert-dlg,#veh-dlg{max-width:720px;max-height:calc(100vh - 40px);overflow:auto}
 .tile.click{cursor:pointer}.tile.click:hover,.tile.click:focus-visible{border-color:var(--accent);outline:none}
 #view-dev tbody tr.dev-row{cursor:pointer}#view-dev tbody tr.dev-row:hover{background:rgba(125,146,168,.08)}
 .hbars{display:flex;align-items:flex-end;gap:2px;height:36px;margin-top:6px}
@@ -125,6 +125,9 @@ dialog label{display:block;margin-top:10px;font-size:12px;color:var(--dim);lette
 dialog input,dialog select{width:100%;margin-top:4px}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:20;max-width:min(92vw,420px);background:var(--panel2);border:1px solid var(--red);color:var(--text);border-radius:10px;padding:10px 14px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
 .danger-zone{margin-top:28px;padding-top:14px;border-top:1px solid var(--line)}
+.vcard{cursor:pointer}.vcard:hover,.vcard:focus-visible{border-color:var(--accent);outline:none}
+.vc-top{display:flex;align-items:baseline;gap:10px}.vc-top .v{font:700 28px/1.1 var(--mono);text-shadow:0 0 16px currentColor}
+.vc-row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:13px}
 .hidden,[hidden]{display:none!important}
 </style>
 </head>
@@ -224,6 +227,13 @@ dialog input,dialog select{width:100%;margin-top:4px}
       <h2>Live feed</h2>
       <div class="feed" id="feed"></div>
     </div>
+
+    <div class="card vcard hidden" id="veh-card" tabindex="0" role="button" title="Show recent vehicle passes">
+      <h2>Vehicles</h2>
+      <div class="vc-top"><span class="v" id="vc-n">-</span><span class="dim" id="vc-s"></span></div>
+      <div class="dim" id="vc-radio" style="margin:6px 0"></div>
+      <div id="vc-list"></div>
+    </div>
   </div>
 
   <div class="card span2">
@@ -320,6 +330,16 @@ dialog input,dialog select{width:100%;margin-top:4px}
   <div class="row" style="margin-top:16px;justify-content:flex-end"><button class="btn" id="alert-close">Close</button></div>
 </dialog>
 
+<dialog id="veh-dlg">
+  <h2 style="margin:0 0 8px">Vehicles, last 24 hours</h2>
+  <p class="dim" style="margin:0 0 8px">Each row is one vehicle passing: tyre sensors heard within 5 minutes of each other. Sensors transmit while the wheels turn, so parked vehicles are not listed.</p>
+  <div id="veh-dlg-radio" class="dim" style="margin-bottom:8px"></div>
+  <div id="veh-dlg-list"></div>
+  <div class="row" style="margin-top:16px;justify-content:flex-end">
+    <button class="btn" id="veh-manage">Manage vehicles</button><button class="btn" id="veh-dlg-close">Close</button>
+  </div>
+</dialog>
+
 <dialog id="link-dlg">
   <form method="dialog" id="link-form">
     <h2 style="margin:0 0 4px" id="link-title">Link to entity</h2>
@@ -353,6 +373,7 @@ const TAU = Math.PI * 2;
 const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const $ = (s, r = document) => r.querySelector(s);
 const pad = n => String(n).padStart(2, '0');
+const hhmmss = ts => { const d = new Date(ts * 1000); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); };
 const hhmm = ts => { const d = new Date(ts * 1000); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
 const rel = s => { s = Math.max(0, Math.round(s)); return s < 60 ? s + 's' : s < 3600 ? Math.floor(s / 60) + 'm' : s < 86400 ? Math.floor(s / 3600) + 'h' : Math.floor(s / 86400) + 'd'; };
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined && text !== null) e.textContent = text; return e; }
@@ -998,8 +1019,8 @@ act.addEventListener('pointerleave', () => { tip2.style.display = 'none'; });
 new ResizeObserver(() => { if (lastAct && tab === 'dash') drawActivity(lastAct); }).observe(act);
 
 /* ---------- vehicles ---------- */
-function renderRadio(r, enabled) {
-  const box = $('#veh-radio'); box.replaceChildren();
+function renderRadio(r, enabled, box) {
+  box = box || $('#veh-radio'); box.replaceChildren();
   if (!r || !enabled) return;
   const dot = c => { const i = el('span', null, '\u25CF '); i.style.color = 'var(--' + c + ')'; return i; };
   const line = (c, t) => { box.appendChild(dot(c)); box.appendChild(document.createTextNode(t)); };
@@ -1421,6 +1442,91 @@ async function openDevice(mac) {
 $('#dev-close').onclick = () => $('#dev-dlg').close();
 $('#alert-close').onclick = () => $('#alert-dlg').close();
 
+/* ---------- vehicles card (under the live feed) ---------- */
+let vehData = null;
+const loadVehCard = single('vehcard', async function () {
+  let d; try { d = await api('/api/vehicles/passes'); } catch (e) { return; }
+  vehData = d;
+  $('#veh-card').classList.toggle('hidden', !d.enabled && !d.passes.length);
+  const r = d.radio || {}, down = ['failed', 'stopped', 'never'].includes(r.state);
+  const color = down ? 'red' : d.unknown ? 'amber' : r.state === 'ok' ? 'green' : null;
+  const n = $('#vc-n'); n.textContent = d.count; n.style.color = color ? 'var(--' + color + ')' : 'var(--dim)';
+  const last = d.passes[0];
+  $('#vc-s').textContent = !d.count ? 'none in 24 h' : (d.count === 1 ? 'pass in 24 h' : 'passes in 24 h')
+    + (d.unknown ? ', ' + d.unknown + ' unknown' : '');
+  const box = $('#vc-radio'); box.replaceChildren();
+  const dot = el('span', null, '\u25CF '); dot.style.color = 'var(--' + (down ? 'red' : r.state === 'ok' ? 'green' : 'amber') + ')';
+  box.appendChild(dot);
+  box.appendChild(document.createTextNode({ ok: 'radio working', quiet: 'radio listening, nothing decoded yet', failed: 'radio failing (see Vehicles)',
+    stopped: 'tyre-sensor service not running', never: 'decoder not started' }[r.state] || 'radio status unknown'));
+  const list = $('#vc-list'); list.replaceChildren();
+  for (const p of d.passes.slice(0, 3)) list.appendChild(passRow(p, d.now));
+});
+function passRow(p, now) {
+  const r = el('div', 'vc-row');
+  const l = el('span', null, p.name + (p.known ? '' : ' (unknown)')); if (!p.known) l.style.color = 'var(--amber)';
+  r.appendChild(l);
+  r.appendChild(el('span', 'dim', hhmm(p.end) + '  ' + rel(now - p.end) + ' ago'));
+  return r;
+}
+const tileKey2 = (id, fn) => { const t = $(id); t.onclick = fn; t.onkeydown = ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); fn(); } }; };
+function openVehicles() {
+  if (!vehData) return;
+  renderRadio(vehData.radio, vehData.enabled, $('#veh-dlg-radio'));
+  const box = $('#veh-dlg-list'); box.replaceChildren();
+  if (!vehData.passes.length) box.appendChild(el('div', 'dim', 'No vehicle passes in the last 24 hours.'));
+  for (const p of vehData.passes) {
+    const wrap = el('div'); wrap.style.borderTop = '1px solid var(--line)';
+    const r = el('div', 'vc-row'); r.style.cssText = 'border-top:0;cursor:pointer'; r.tabIndex = 0; r.setAttribute('role', 'button');
+    const a = el('div'); const nm = el('div', null, p.name); if (!p.known) nm.style.color = 'var(--amber)';
+    a.appendChild(nm);
+    a.appendChild(el('div', 'dim', p.sensors + (p.sensors === 1 ? ' sensor' : ' sensors') + (p.best_rssi === null ? '' : ', best signal ' + Math.round(p.best_rssi) + ' dB')
+      + (p.known ? ', known' : ', ' + p.unknown_sensors + ' unknown') + '. Click for the raw data.'));
+    r.appendChild(a);
+    r.appendChild(el('span', 'dim', absTime(p.start) + (p.end - p.start > 60 ? ' to ' + hhmm(p.end) : '')));
+    const detail = el('div'); detail.hidden = true; detail.style.cssText = 'padding:0 0 10px';
+    const toggle = async () => {
+      detail.hidden = !detail.hidden;
+      if (detail.hidden || detail.dataset.loaded) return;
+      detail.dataset.loaded = '1'; detail.appendChild(el('div', 'dim', 'Loading…'));
+      try { fillPassDetail(detail, (await api('/api/vehicles/hits?from=' + (p.start - 1) + '&to=' + (p.end + 1))).hits); }
+      catch (e) { detail.replaceChildren(el('div', 'dim', 'Could not load the raw data.')); delete detail.dataset.loaded; }
+    };
+    r.onclick = toggle; r.onkeydown = ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); } };
+    wrap.appendChild(r); wrap.appendChild(detail); box.appendChild(wrap);
+  }
+  $('#veh-dlg').showModal();
+}
+// What rtl_433 decoded for each logged message, then the untouched JSON lines.
+const RAW_LABELS = [['pressure_kPa', 'Pressure', ' kPa'], ['pressure_PSI', 'Pressure', ' psi'], ['pressure_bar', 'Pressure', ' bar'],
+  ['temperature_C', 'Temperature', ' °C'], ['battery_ok', 'Battery ok', ''], ['freq', 'Frequency', ' MHz'], ['rssi', 'Signal', ' dB'],
+  ['snr', 'Signal to noise', ' dB'], ['noise', 'Noise', ' dB'], ['protocol', 'rtl_433 protocol', ''], ['flags', 'Flags', ''], ['status', 'Status', '']];
+function fillPassDetail(box, hits) {
+  box.replaceChildren();
+  if (!hits.length) { box.appendChild(el('div', 'dim', 'No stored messages for this pass (they are kept for the retention period).')); return; }
+  const by = new Map();
+  for (const h of hits) { if (!by.has(h.vid)) by.set(h.vid, []); by.get(h.vid).push(h); }
+  for (const [vid, hs] of by) {
+    box.appendChild(Object.assign(el('div', 'dim', vid + (hs[0].label ? '  (' + hs[0].label + ')' : '') + (hs[0].known ? ', known' : ', unknown') + ', ' + hs.length + (hs.length === 1 ? ' message' : ' messages')), { style: 'margin-top:10px' }));
+    const kv = el('div', 'kv'); kv.style.marginTop = '4px';
+    const last = hs[hs.length - 1].raw || {};
+    kv.appendChild(el('span', null, 'Last heard')); kv.appendChild(el('span', null, absTime(hs[hs.length - 1].ts)));
+    for (const [k, label, unit] of RAW_LABELS) {
+      if (last[k] === undefined || last[k] === null) continue;
+      kv.appendChild(el('span', null, label)); kv.appendChild(el('span', null, (typeof last[k] === 'number' ? +last[k].toFixed(2) : String(last[k])) + unit));
+    }
+    box.appendChild(kv);
+  }
+  const det = el('details'); det.style.marginTop = '10px';
+  det.appendChild(el('summary', 'dim', 'Raw rtl_433 messages (' + hits.length + ')'));
+  const pre = el('pre', 'mono', hits.map(h => hhmmss(h.ts) + '  ' + (h.raw_text || '(not stored)')).join('\n'));
+  pre.style.cssText = 'font-size:11px;max-height:260px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere';
+  det.appendChild(pre); box.appendChild(det);
+}
+$('#veh-dlg-close').onclick = () => $('#veh-dlg').close();
+$('#veh-manage').onclick = () => { $('#veh-dlg').close(); setTab('dev'); setTimeout(() => $('#veh-wrap').scrollIntoView({ behavior: 'smooth' }), 300); };
+tileKey2('#veh-card', openVehicles);
+
 /* ---------- tiles drill down ---------- */
 function showDevices(filter) {
   setTab('dev'); $('#dev-filter').value = filter; $('#dev-radio').value = ''; $('#dev-q').value = ''; loadDevices();
@@ -1473,7 +1579,7 @@ const tickFast = single('fast', async function () {
 const tickSlow = single('slow', async function () {
   try {
     const [f, a] = await Promise.all([api('/api/feed?limit=40'), api('/api/activity?hours=24')]);
-    renderFeed(f.items); drawActivity(a); loadSpark();
+    renderFeed(f.items); drawActivity(a); loadSpark(); loadVehCard();
   } catch (e) { /* the fast tick reports connectivity */ }
 });
 setInterval(() => { if (!document.hidden && tab === 'dash') tickFast(); }, 5000);

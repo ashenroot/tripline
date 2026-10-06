@@ -22,7 +22,8 @@ import identity
 import watcher
 from watcher import log, meta_get, meta_set, notify
 
-DEFAULT_CMD = "rtl_433 -d {device} {freqs} -F json -M level -M time:unix"
+HIT_GAP = 10  # seconds between logged hits for one sensor
+DEFAULT_CMD = "rtl_433 -d {device} {freqs} -F json -M level -M protocol -M time:unix"
 
 
 def parse(line):
@@ -40,13 +41,17 @@ def parse(line):
     sid = str(m["id"])[:32]
     rssi = m.get("rssi")
     freq = m.get("freq")
-    return {"vid": f"{model}:{sid}", "model": model, "id": sid,
+    return {"vid": f"{model}:{sid}", "model": model, "id": sid, "raw": line.strip()[:2000],
             "rssi": float(rssi) if isinstance(rssi, (int, float)) else None,
             "freq": float(freq) if isinstance(freq, (int, float)) else None}
 
 
 def record(cfg, db, msg, now, last_alert, recent=None):
     """Store one decoded message; alert on an unknown vehicle. Returns True if an alert was sent."""
+    prev = db.execute("SELECT MAX(ts) FROM vehicle_hits WHERE vid=?", (msg["vid"],)).fetchone()[0]
+    if prev is None or now - prev >= HIT_GAP:  # sensors repeat each burst several times
+        db.execute("INSERT INTO vehicle_hits(ts,vid,rssi,raw) VALUES(?,?,?,?)",
+                   (now, msg["vid"], msg["rssi"], msg.get("raw")))
     db.execute(
         "INSERT INTO vehicles(vid,model,sensor_id,first_seen,last_seen,seen_count,known,last_rssi,last_freq) "
         "VALUES(?,?,?,?,?,1,0,?,?) ON CONFLICT(vid) DO UPDATE SET last_seen=excluded.last_seen, "
@@ -141,6 +146,7 @@ def consume(cfg, db, lines, radio=None):
         if now - last_purge > 3600:
             cutoff = now - cfg.getint("detect", "retention_days") * 86400
             db.execute("DELETE FROM vehicles WHERE known=0 AND last_seen<?", (cutoff,))
+            db.execute("DELETE FROM vehicle_hits WHERE ts<?", (cutoff,))
             db.commit()
             last_purge = now
 

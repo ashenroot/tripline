@@ -775,6 +775,40 @@ def api_vehicles():
                     "now": now, "vehicles": [dict(r) for r in rows]})
 
 
+@app.get("/api/vehicles/passes")
+def api_vehicle_passes():
+    db, now = get_db(), int(time.time())
+    enabled = cfg().getboolean("vehicles", "enabled", fallback=False)
+    passes = identity.vehicle_passes(db, now, hours=24)
+    last = db.execute("SELECT MAX(last_seen) FROM vehicles").fetchone()[0]
+    return jsonify({"enabled": enabled, "now": now, "radio": dict(watcher.radio_status(db, now), last_sensor=last),
+                    "passes": passes, "count": len(passes),
+                    "unknown": sum(1 for p in passes if not p["known"]), "last_sensor": last})
+
+
+@app.get("/api/vehicles/hits")
+def api_vehicle_hits():
+    """The logged tyre-sensor messages in a time window, with the raw decoder output."""
+    db = get_db()
+    try:
+        t0, t1 = int(request.args["from"]), int(request.args["to"])
+    except (KeyError, ValueError):
+        return jsonify({"error": "from and to (unix seconds) are required"}), 400
+    t1 = min(t1, t0 + 6 * 3600)
+    rows = db.execute("SELECT h.ts,h.vid,h.rssi,h.raw,v.model,v.label,v.known FROM vehicle_hits h "
+                      "LEFT JOIN vehicles v ON v.vid=h.vid WHERE h.ts BETWEEN ? AND ? ORDER BY h.ts LIMIT 200",
+                      (t0, t1)).fetchall()
+    out = []
+    for r in rows:
+        try:
+            raw = json.loads(r["raw"]) if r["raw"] else None
+        except ValueError:
+            raw = None
+        out.append({"ts": r["ts"], "vid": r["vid"], "rssi": r["rssi"], "model": r["model"], "label": r["label"],
+                    "known": bool(r["known"]), "raw": raw, "raw_text": r["raw"]})
+    return jsonify({"hits": out})
+
+
 @app.post("/api/vehicles/known")
 def api_vehicles_known():
     b = body()

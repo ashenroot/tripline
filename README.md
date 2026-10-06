@@ -193,6 +193,15 @@ alerts for 2, 8 or 24 hours; Off ends it early.
 
 **Live feed.** Alerts and newly seen devices, newest first.
 
+**Vehicles** (only when `[vehicles] enabled = true`). Tyre-pressure sensors heard by the SDR. The big
+number is vehicle passes in the last 24 hours: sensors heard within 5 minutes of each other count as
+one pass, because a car has up to four. It is amber when a pass includes a sensor you have not marked
+known, and red when the radio is down. The line below it says whether the radio is working, and the
+latest passes are listed under it. Click the card for every pass in the last 24 hours. Click a pass
+to see what rtl_433 decoded (pressure, temperature, battery, signal, protocol) and the raw JSON lines
+exactly as the decoder printed them. Messages are stored at most once per sensor every 10 seconds and
+kept for `retention_days`.
+
 **Last 24 hours.** One bar per time slot, split into rotating, unknown static and known static
 devices, with red marks where alerts fired. Hover for the counts.
 

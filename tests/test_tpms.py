@@ -89,11 +89,11 @@ class Command(unittest.TestCase):
 
     def test_default_watches_both_bands_and_hops_fast(self):
         self.assertEqual(tpms.command(self.cfgv()),
-                         "rtl_433 -d 0 -f 315M -f 433.92M -H 10 -F json -M level -M time:unix")
+                         "rtl_433 -d 0 -f 315M -f 433.92M -H 10 -F json -M level -M protocol -M time:unix")
 
     def test_single_frequency_does_not_hop(self):
         c = tpms.command(self.cfgv(frequencies="433.92M"))
-        self.assertEqual(c, "rtl_433 -d 0 -f 433.92M -F json -M level -M time:unix")
+        self.assertEqual(c, "rtl_433 -d 0 -f 433.92M -F json -M level -M protocol -M time:unix")
 
     def test_hop_seconds_configurable(self):
         self.assertIn("-H 5", tpms.command(self.cfgv(hop_seconds="5")))
@@ -183,6 +183,57 @@ class RadioHealth(unittest.TestCase):
         self.assertEqual(self.status(1010), "quiet")
 
 
+class Passes(unittest.TestCase):
+    def setUp(self):
+        self.t = tmpdir()
+        self.cfg = make_cfg(self.t.name)
+        self.db = watcher.db_connect(self.cfg)
+
+    def tearDown(self):
+        self.db.close()
+        self.t.cleanup()
+
+    def hit(self, sid, ts, **kw):
+        tpms.record(self.cfg, self.db, tpms.parse(line(sid=sid, **kw)), ts, {})
+
+    def test_repeat_messages_log_one_hit_per_ten_seconds(self):
+        for ts in (1000, 1001, 1002, 1009, 1010, 1030):
+            self.hit("aa", ts)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM vehicle_hits").fetchone()[0], 3)
+
+    def test_sensors_of_one_car_form_one_pass(self):
+        import identity
+        for i, sid in enumerate(("a1", "a2", "a3", "a4")):
+            self.hit(sid, 1000 + i * 20, rssi=-30 - i)
+        self.hit("a1", 1000 + 3600)  # an hour later: a second pass
+        passes = identity.vehicle_passes(self.db, 1000 + 3700)
+        self.assertEqual([p["sensors"] for p in passes], [1, 4])
+        self.assertEqual(passes[1]["best_rssi"], -30)
+        self.assertFalse(passes[1]["known"])
+
+    def test_pass_is_known_only_when_every_sensor_is_known(self):
+        import identity
+        self.hit("a1", 1000); self.hit("a2", 1010)
+        self.db.execute("UPDATE vehicles SET known=1, label='Truck' WHERE vid='Toyota:a1'")
+        p = identity.vehicle_passes(self.db, 1100)[0]
+        self.assertEqual((p["known"], p["unknown_sensors"], p["name"]), (False, 1, "Truck"))
+        self.db.execute("UPDATE vehicles SET known=1")
+        self.assertTrue(identity.vehicle_passes(self.db, 1100)[0]["known"])
+
+    def test_window_excludes_old_hits(self):
+        import identity
+        self.hit("a1", 1000)
+        self.assertEqual(identity.vehicle_passes(self.db, 1000 + 25 * 3600), [])
+
+    def test_purge_drops_old_hits_and_reset_clears_them(self):
+        self.hit("a1", 1000)
+        watcher.purge(self.db, self.cfg, 1000 + 40 * 86400)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM vehicle_hits").fetchone()[0], 0)
+        self.hit("a1", 5000)
+        watcher.reset_db(self.db)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM vehicle_hits").fetchone()[0], 0)
+
+
 class VehicleApi(unittest.TestCase):
     def setUp(self):
         self.t = tmpdir()
@@ -210,6 +261,23 @@ class VehicleApi(unittest.TestCase):
         d = self.client.get("/api/vehicles").get_json()
         self.assertEqual(d["radio"]["state"], "never")
         self.assertEqual(d["radio"]["last_sensor"], 1000)
+
+    def test_passes_endpoint(self):
+        now = int(__import__("time").time())
+        tpms.record(self.cfg, self.db, tpms.parse(line(sid="zz")), now - 120, {})
+        d = self.client.get("/api/vehicles/passes").get_json()
+        self.assertEqual((d["count"], d["unknown"]), (1, 1))
+        self.assertEqual(d["passes"][0]["sensors"], 1)
+        self.assertIn("state", d["radio"])
+
+    def test_hits_endpoint_returns_raw_decoder_output(self):
+        now = int(__import__("time").time())
+        tpms.record(self.cfg, self.db, tpms.parse(line(sid="zz", protocol=110)), now - 60, {})
+        d = self.client.get("/api/vehicles/hits?from=%d&to=%d" % (now - 120, now)).get_json()
+        h = d["hits"][0]
+        self.assertEqual((h["vid"], h["raw"]["protocol"], h["raw"]["pressure_kPa"]), ("Toyota:zz", 110, 230.0))
+        self.assertIn('"id": "zz"', h["raw_text"])
+        self.assertEqual(self.client.get("/api/vehicles/hits").status_code, 400)
 
     def test_unknown_vid_404_and_csrf(self):
         self.assertEqual(self.client.post("/api/vehicles/known", json={"vid": "x"}, headers=H).status_code, 404)

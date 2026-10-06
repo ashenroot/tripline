@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS entity_members (
 CREATE TABLE IF NOT EXISTS dismissed (a TEXT, b TEXT, PRIMARY KEY(a, b));
 CREATE TABLE IF NOT EXISTS vehicle_pairs (
     a TEXT, b TEXT, n INTEGER, last_seen INTEGER, PRIMARY KEY(a, b));
+CREATE TABLE IF NOT EXISTS vehicle_hits (ts INTEGER, vid TEXT, rssi REAL, raw TEXT);
+CREATE INDEX IF NOT EXISTS ix_vehicle_hits_ts ON vehicle_hits(ts);
+CREATE INDEX IF NOT EXISTS ix_vehicle_hits_vid ON vehicle_hits(vid, ts);
 CREATE TABLE IF NOT EXISTS presence (bucket INTEGER, ref TEXT, PRIMARY KEY(bucket, ref)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS networks (
     bssid TEXT PRIMARY KEY, label TEXT, added INTEGER);
@@ -413,6 +416,7 @@ def store_extra(db, mac, new, fp=None):
 def purge(db, cfg, now):
     cutoff = now - cfg.getint("detect", "retention_days") * 86400
     db.execute("DELETE FROM sightings WHERE ts<?", (cutoff,))
+    db.execute("DELETE FROM vehicle_hits WHERE ts<?", (cutoff,))
     db.execute("DELETE FROM devices WHERE known=0 AND last_seen<? AND mac NOT IN "
                "(SELECT ref FROM entity_members WHERE kind='device')", (cutoff,))
     # Probed names of strangers are personal data: keep them only as long as the device record.
@@ -620,7 +624,7 @@ def cmd_doctor(cfg, db, args):
         print("  They contain MAC addresses and names of nearby devices. Review before sharing.")
 
 
-DISCOVERED = ("sightings", "devices", "probes", "counts", "alerts", "vehicles", "vehicle_pairs",
+DISCOVERED = ("sightings", "devices", "probes", "counts", "alerts", "vehicles", "vehicle_pairs", "vehicle_hits",
               "presence", "dismissed", "entity_members", "entities")
 
 

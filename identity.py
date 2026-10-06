@@ -603,3 +603,39 @@ def note_tpms(db, recent, vid, now):
             elif now - row[0] > 60:  # one count per burst, not per message
                 db.execute("UPDATE vehicle_pairs SET n=n+1, last_seen=? WHERE a=? AND b=?", (now, a, b))
     recent[vid] = now
+
+
+PASS_GAP = 300  # a quiet spell this long (seconds) separates two vehicle passes
+
+
+def vehicle_passes(db, now, hours=24, limit=50):
+    """Group logged tyre-sensor hits into vehicle passes, newest first.
+
+    A car has up to four sensors that speak within moments of each other, so hits
+    separated by less than PASS_GAP seconds belong to one pass. A pass is known only
+    when every sensor in it is marked known.
+    """
+    rows = db.execute("SELECT h.ts, h.vid, h.rssi, v.model, v.label, v.known FROM vehicle_hits h "
+                      "LEFT JOIN vehicles v ON v.vid=h.vid WHERE h.ts>=? ORDER BY h.ts",
+                      (now - hours * 3600,)).fetchall()
+    passes, cur = [], None
+    for ts, vid, rssi, model, label, known in rows:
+        if cur is None or ts - cur["end"] > PASS_GAP:
+            cur = {"start": ts, "end": ts, "sensors": {}, "best_rssi": None}
+            passes.append(cur)
+        cur["end"] = ts
+        sen = cur["sensors"].setdefault(vid, {"model": model, "label": label, "known": bool(known)})
+        if label and not sen["label"]:
+            sen["label"] = label
+        if rssi is not None and (cur["best_rssi"] is None or rssi > cur["best_rssi"]):
+            cur["best_rssi"] = rssi
+    out = []
+    for c in reversed(passes):
+        sens = list(c["sensors"].values())
+        label = next((x["label"] for x in sens if x["label"]), None)
+        out.append({"start": c["start"], "end": c["end"], "sensors": len(sens),
+                    "name": label or (sens[0]["model"] or "Unknown vehicle"),
+                    "known": all(x["known"] for x in sens),
+                    "unknown_sensors": sum(1 for x in sens if not x["known"]),
+                    "best_rssi": c["best_rssi"]})
+    return out[:limit]
