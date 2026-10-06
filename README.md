@@ -517,6 +517,7 @@ Common problems:
 | Bluetooth devices are missing | They may be hidden by the default filters. On the Devices tab choose Filter: All and Radio: Bluetooth only, then sort by Last seen. A phone stops advertising when idle and locked. Opening its Bluetooth settings makes it advertise. |
 | Two computers show different dashboards | The Known and Rotating chips are saved per browser. |
 | Devices stay unknown after My network | Add each BSSID of the access point (siblings are matched when they differ in the middle bytes or the first byte's low bits). A client is attached to a particular BSSID, and Kismet only reports the association when it hears the client's data traffic on its channel. |
+| No tyre-sensor (TPMS) detections | Check `journalctl -u tripline-tpms -n 40`. `usb_open error -3` means the service user cannot open the dongle: re-run the installer (it writes `/etc/udev/rules.d/60-tripline-rtlsdr.rules`), unplug and replug the dongle, then `sudo systemctl restart tripline-tpms`. `No supported devices found` means the dongle is missing or taken by the kernel TV driver (the installer blacklists it; reboot once). Parked cars are silent: sensors transmit only while the wheels turn, and only within tens of feet. |
 | The dashboard feels slow | Raise `sighting_interval_seconds`, or lower `retention_days`. |
 | No hostnames | A passive sensor cannot read them: they travel inside encrypted traffic. Bluetooth names and access-point names are shown when advertised. A known-device source such as UniFi can supply names. |
 

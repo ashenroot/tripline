@@ -33,6 +33,7 @@ DATA_DIR="${DATA_DIR:-/var/lib/tripline}"
 UNIT_DIR="${UNIT_DIR:-/etc/systemd/system}"
 KISMET_ETC="${KISMET_ETC:-/etc/kismet}"
 MODPROBE_DIR="${MODPROBE_DIR:-/etc/modprobe.d}"
+UDEV_DIR="${UDEV_DIR:-/etc/udev/rules.d}"
 USB_SYSFS="${USB_SYSFS:-/sys/bus/usb/devices}"
 BT_SYSFS="${BT_SYSFS:-/sys/class/bluetooth}"
 SVC_USER="tripline"
@@ -117,7 +118,7 @@ if [ "$UNINSTALL" = 1 ]; then
     rm -rf "$PREFIX"
   fi
   if [ "$PURGE" = 1 ]; then
-    rm -rf "$ETC_DIR" "$DATA_DIR" "$MODPROBE_DIR/blacklist-tripline-rtl.conf"
+    rm -rf "$ETC_DIR" "$DATA_DIR" "$MODPROBE_DIR/blacklist-tripline-rtl.conf" "$UDEV_DIR/60-tripline-rtlsdr.rules"
     id "$SVC_USER" >/dev/null 2>&1 && userdel "$SVC_USER" 2>/dev/null || true
     say "Removed code, config, data and the $SVC_USER user. Kismet itself was left installed (apt remove kismet)."
   else
@@ -204,6 +205,18 @@ if [ "$DO_KISMET" = 1 ]; then
 fi
 if [ "$SDR" = 1 ]; then
   getent group plugdev >/dev/null && usermod -aG plugdev "$SVC_USER" || true
+  # Newer Debian and Raspberry Pi OS releases no longer give plugdev access to these
+  # dongles, so the service user would get "usb_open error -3". Grant access directly.
+  install -d "$UDEV_DIR"
+  {
+    echo "# Written by the Tripline installer: let the service user open RTL-SDR dongles."
+    echo "SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"0bda\", ATTRS{idProduct}==\"2832\", MODE=\"0660\", GROUP=\"$SVC_USER\""
+    echo "SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"0bda\", ATTRS{idProduct}==\"2838\", MODE=\"0660\", GROUP=\"$SVC_USER\""
+  } >"$UDEV_DIR/60-tripline-rtlsdr.rules"
+  if command -v udevadm >/dev/null; then
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger --subsystem-match=usb --action=add 2>/dev/null || true
+  fi
 fi
 
 # ---------------------------------------------------------------- code
