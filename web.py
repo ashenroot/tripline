@@ -146,6 +146,7 @@ def api_state():
         "last_alert": dict(la) if la else None,
         "wifi_floor": c.getint("detect", "wifi_rssi"),
         "bt_floor": c.getint("detect", "bt_rssi"),
+        "health": watcher.component_health(c, db, now),
     })
 
 
@@ -497,6 +498,16 @@ def api_mode():
     if mode == "learning" and not watcher.meta_get(db, "learning_start"):
         watcher.meta_set(db, "learning_start", int(time.time()))
     return jsonify({"ok": True, "mode": mode})
+
+
+@app.post("/api/test-alert")
+def api_test_alert():
+    """Send a test message to every configured channel (no alert is recorded)."""
+    res = watcher.send_test(cfg(), get_db())
+    if not res:
+        return jsonify({"ok": False, "results": [], "error": "No ntfy topic or webhook is configured."}), 200
+    return jsonify({"ok": all(r[1] for r in res),
+                    "results": [{"channel": c, "ok": ok, "error": err} for c, ok, err in res]})
 
 
 @app.post("/api/arm")

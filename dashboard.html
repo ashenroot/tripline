@@ -29,6 +29,11 @@ header{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;align-items:c
 .dot.bad{background:var(--red);box-shadow:0 0 8px var(--red)}
 .dot.warn{background:var(--amber);box-shadow:0 0 8px var(--amber)}
 .spacer{flex:1}
+.hp{cursor:pointer;appearance:none}.hp:hover,.hp:focus-visible{border-color:var(--accent);outline:none}
+#health{display:inline-flex;gap:6px;flex-wrap:wrap}
+.hrow{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;padding:10px 0;border-top:1px solid var(--line)}
+.hrow .fix{grid-column:2;font:11px var(--mono);color:var(--dim);overflow-wrap:anywhere}
+@media(max-width:760px){.hp .hl{display:none}}
 nav{display:flex;gap:4px}
 nav button{background:none;border:1px solid transparent;border-radius:8px;padding:5px 12px;color:var(--dim)}
 nav button[aria-selected=true]{color:var(--accent);border-color:var(--line);background:var(--panel)}
@@ -106,7 +111,7 @@ td input{width:150px}
 .pair .arrow{color:var(--accent);font-size:18px}
 @media (max-width:640px){.pair{grid-template-columns:1fr}.pair .arrow{display:none}}
 dialog{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:18px;max-width:420px;width:calc(100% - 32px)}
-#dev-dlg,#alert-dlg,#veh-dlg{max-width:720px;max-height:calc(100vh - 40px);overflow:auto}
+#dev-dlg,#alert-dlg,#veh-dlg,#health-dlg{max-width:720px;max-height:calc(100vh - 40px);overflow:auto}
 .tile.click{cursor:pointer}.tile.click:hover,.tile.click:focus-visible{border-color:var(--accent);outline:none}
 #view-dev tbody tr.dev-row{cursor:pointer}#view-dev tbody tr.dev-row:hover{background:rgba(125,146,168,.08)}
 .hbars{display:flex;align-items:flex-end;gap:2px;height:36px;margin-top:6px}
@@ -134,7 +139,8 @@ dialog input,dialog select{width:100%;margin-top:4px}
 <body>
 <header>
   <span class="logo">Tripline</span>
-  <span class="pill"><span class="dot" id="d-sensor"></span><span id="t-sensor">connecting</span></span>
+  <span id="health" aria-label="System status"></span>
+  <span class="pill" id="p-offline" hidden><span class="dot warn"></span>web API unreachable</span>
   <span class="pill" id="p-guest" hidden></span>
   <span class="spacer"></span>
   <nav role="tablist">
@@ -328,6 +334,16 @@ dialog input,dialog select{width:100%;margin-top:4px}
   <h2 style="margin:0 0 8px">Alerts, last 24 hours</h2>
   <div id="alert-list"></div>
   <div class="row" style="margin-top:16px;justify-content:flex-end"><button class="btn" id="alert-close">Close</button></div>
+</dialog>
+
+<dialog id="health-dlg">
+  <h2 style="margin:0 0 4px">System status</h2>
+  <p class="dim" style="margin:0 0 8px">What each part of the sensor is doing right now. Red and amber lines say what to run on the Pi.</p>
+  <div id="health-list"></div>
+  <div class="dim" id="test-result" style="margin-top:8px"></div>
+  <div class="row" style="margin-top:16px;justify-content:flex-end">
+    <button class="btn" id="test-alert">Send test alert</button><button class="btn" id="health-close">Close</button>
+  </div>
 </dialog>
 
 <dialog id="veh-dlg">
@@ -916,15 +932,50 @@ function renderState() {
   const a = $('#v-alerts'); a.textContent = s.alerts_24h; a.className = 'v ' + (s.alerts_24h ? 'c-red' : 'c-green');
   $('#s-alerts').textContent = s.last_alert ? 'last: ' + s.last_alert.title + ' (' + rel(s.now - s.last_alert.ts) + ' ago)' : 'none';
 
-  $('#d-sensor').className = 'dot ' + (s.sensor_ok ? 'ok' : 'bad');
-  $('#t-sensor').textContent = s.sensor_ok ? 'sensor live' : 'no sightings in 2 min';
+  renderHealth(s.health || []);
   const g = $('#p-guest');
   if (s.quiet_until) { g.hidden = false; g.textContent = 'guest until ' + hhmm(s.quiet_until); } else { g.hidden = true; }
   document.querySelectorAll('[data-guest]').forEach(b => b.setAttribute('aria-pressed', 'false'));
 }
-function setOnline(ok) {
-  if (!ok) { $('#d-sensor').className = 'dot warn'; $('#t-sensor').textContent = 'web API unreachable'; }
+function setOnline(ok) { $('#p-offline').hidden = ok !== false; }
+
+/* ---------- header status indicators ---------- */
+let healthData = [];
+const HSTATE = { ok: 'ok', warn: 'warn', bad: 'bad', off: '' };
+function renderHealth(list) {
+  healthData = list; $('#p-offline').hidden = true;
+  const box = $('#health'); box.replaceChildren();
+  for (const c of list) {
+    const b = el('button', 'pill hp'); b.type = 'button'; b.title = c.label + ': ' + c.detail;
+    b.appendChild(el('span', 'dot ' + (HSTATE[c.state] || ''))); b.appendChild(el('span', 'hl', c.label));
+    b.onclick = openHealth; box.appendChild(b);
+  }
+  if ($('#health-dlg').open) fillHealth();
 }
+function fillHealth() {
+  const box = $('#health-list'); box.replaceChildren();
+  for (const c of healthData) {
+    const r = el('div', 'hrow');
+    r.appendChild(el('span', 'dot ' + (HSTATE[c.state] || '')));
+    const t = el('div'); t.appendChild(el('strong', null, c.label)); t.appendChild(el('div', 'dim', c.detail)); r.appendChild(t);
+    if (c.fix && c.state !== 'ok') r.appendChild(el('div', 'fix', 'Try: ' + c.fix));
+    box.appendChild(r);
+  }
+}
+function openHealth() { $('#test-result').textContent = ''; fillHealth(); $('#health-dlg').showModal(); }
+$('#health-close').onclick = () => $('#health-dlg').close();
+$('#test-alert').onclick = async () => {
+  const btn = $('#test-alert'), out = $('#test-result');
+  if (btn.disabled) return;
+  btn.disabled = true; out.textContent = 'Sending\u2026';
+  try {
+    const r = await post('/api/test-alert');
+    out.textContent = !r.results.length ? (r.error || 'Nothing is configured to send to.')
+      : r.results.map(x => x.channel + ': ' + (x.ok ? 'delivered' : 'failed (' + x.error + ')')).join('   ');
+    tickFast();
+  } catch (e) { out.textContent = 'The test did not go through. Check the connection and try again.'; }
+  finally { btn.disabled = false; }
+};
 $('#m-home').onclick = async () => { await post('/api/mode', { mode: 'home' }); tickFast(); };
 $('#m-away').onclick = async () => { await post('/api/mode', { mode: 'away' }); tickFast(); };
 $('#btn-arm').onclick = async () => {

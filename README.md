@@ -151,8 +151,23 @@ If the clone lives in `/opt/tripline` itself, the installer detects that and upd
 
 ## Using the web interface
 
-Three tabs: Dashboard, Devices, Entities. The header shows whether the sensor is live ("sensor
-live" turns to "no sightings in 2 min" when Kismet stops reporting).
+Three tabs: Dashboard, Devices, Entities.
+
+**Status indicators (header).** One dot per component, so you can see which part is wrong:
+
+| Indicator | Green | Amber | Red |
+|---|---|---|---|
+| Kismet | the watcher's last poll worked | the watcher has not polled yet | Kismet is unreachable, or the watcher stopped polling |
+| Wi-Fi | the Kismet source is running and devices were heard in the last 5 minutes | running but nothing heard | the source is not running or is missing |
+| Bluetooth | as Wi-Fi | running but nothing heard, or devices heard with no signal reading (they are listed but cannot be plotted or alert) | the source is not running |
+| SDR | the decoder is running and has decoded messages | running, nothing decoded yet | the decoder is failing or the service is stopped (only shown when `[vehicles] enabled = true`) |
+| Alerts | the last ntfy or webhook delivery worked | configured but nothing delivered yet | the last delivery failed |
+
+A grey dot means the component is not configured (for example no Bluetooth source, or no ntfy topic).
+Click any indicator for the details and the command to run on the Pi. The dialog has a **Send test
+alert** button that sends a test message to every configured channel and reports the result, without
+recording an alert. The indicators update every few seconds. If the dashboard itself cannot reach
+the web service, a "web API unreachable" badge replaces them.
 
 ### Dashboard tab
 

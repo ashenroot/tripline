@@ -288,36 +288,57 @@ def kismet_get(cfg, path, fields=None, since=None):
         return json.load(resp)
 
 
+def _channels(cfg, title, message, priority="default", tags=""):
+    """The configured delivery channels as [(name, request)]."""
+    out = []
+    topic = cfg.get("ntfy", "topic", fallback="").strip()
+    if topic:
+        url = cfg.get("ntfy", "url", fallback="https://ntfy.sh").rstrip("/") + "/" + topic
+        out.append(("ntfy", urllib.request.Request(
+            url, data=message.encode(), headers={"Title": title, "Priority": priority, "Tags": tags})))
+    hook = cfg.get("webhook", "url", fallback="").strip()
+    if hook:
+        body = json.dumps({"title": title, "message": message,
+                           "priority": priority, "ts": int(time.time())}).encode()
+        out.append(("webhook", urllib.request.Request(
+            hook, data=body, headers={"Content-Type": "application/json"})))
+    return out
+
+
 def notify(cfg, db, title, message, priority="default", tags=""):
     """Record the alert, then deliver it to every configured channel.
 
     Channels: ntfy (only if [ntfy] topic is set), a JSON webhook (only if
     [webhook] url is set). With neither, the alert is logged and shown in the web UI.
+    The outcome of each delivery is kept for the Alerts indicator.
     """
     db.execute("INSERT INTO alerts VALUES(?,?,?,?)",
                (int(time.time()), title, message, priority))
     db.commit()
     log(f"ALERT: {title} - {message}")
-    topic = cfg.get("ntfy", "topic", fallback="").strip()
-    if topic:
-        url = cfg.get("ntfy", "url", fallback="https://ntfy.sh").rstrip("/") + "/" + topic
-        req = urllib.request.Request(
-            url, data=message.encode(),
-            headers={"Title": title, "Priority": priority, "Tags": tags})
-        _deliver(req, "ntfy")
-    hook = cfg.get("webhook", "url", fallback="").strip()
-    if hook:
-        body = json.dumps({"title": title, "message": message,
-                           "priority": priority, "ts": int(time.time())}).encode()
-        _deliver(urllib.request.Request(
-            hook, data=body, headers={"Content-Type": "application/json"}), "webhook")
+    for name, req in _channels(cfg, title, message, priority, tags):
+        _deliver(req, name, db)
 
 
-def _deliver(req, name):
+def send_test(cfg, db):
+    """Deliver a test message to every channel without recording an alert. Returns [(channel, ok, error)]."""
+    return [(name,) + _deliver(req, name, db)
+            for name, req in _channels(cfg, "Tripline test", "This is a test alert from Tripline.", "default", "white_check_mark")]
+
+
+def _deliver(req, name, db=None):
+    ok, err = True, ""
     try:
         urllib.request.urlopen(req, timeout=10).read()
     except Exception as exc:  # alerting must never crash the loop
+        ok, err = False, str(exc)[:200]
         log(f"{name} delivery failed: {exc}")
+    if db is not None:
+        try:
+            meta_set(db, "notify_" + name, "%d|%s|%s" % (time.time(), "ok" if ok else "fail", err))
+        except Exception:
+            pass
+    return ok, err
 
 
 # ---------- detection ----------
@@ -427,6 +448,143 @@ def purge(db, cfg, now):
     db.commit()
 
 
+def source_kind(src):
+    """'bt' or 'wifi' for one Kismet data source record, judged by its interface and name."""
+    text = " ".join(str(src.get(k) or "") for k in ("iface", "name", "driver")).lower()
+    return "bt" if ("hci" in text or "bluetooth" in text or "btle" in text) else "wifi"
+
+
+def record_poll(cfg, db, now, failure):
+    """Remember how the last Kismet poll went, and every minute which data sources are running."""
+    if failure is None:
+        db.execute("INSERT INTO meta(k,v) VALUES('kismet_ok',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (str(now),))
+        db.execute("DELETE FROM meta WHERE k='kismet_fail'")
+    else:
+        meta_set(db, "kismet_fail", "%d|%s" % failure)
+        return
+    if now - float(meta_get(db, "kismet_sources_ts", 0)) < 60:
+        return
+    try:
+        srcs = kismet_get(cfg, "/datasource/all_sources.json")
+        rows = [{"name": x.get("kismet.datasource.name") or "?",
+                 "iface": x.get("kismet.datasource.interface") or x.get("kismet.datasource.source_name") or "?",
+                 "running": bool(x.get("kismet.datasource.running"))}
+                for x in (srcs if isinstance(srcs, list) else [])]
+        for r in rows:
+            r["kind"] = source_kind(r)
+        meta_set(db, "kismet_sources", json.dumps(rows))
+        meta_set(db, "kismet_sources_ts", now)
+    except Exception as exc:
+        log(f"could not read Kismet data sources: {exc}")
+
+
+def component_health(cfg, db, now):
+    """One entry per important component: {id, label, state ok|warn|bad|off, detail, fix}."""
+    def ago(t):
+        d = max(0, int(now - t))
+        return "%ds ago" % d if d < 90 else "%d min ago" % (d // 60) if d < 5400 else "%dh ago" % (d // 3600)
+    out = []
+    add = lambda i, label, state, detail, fix="": out.append(
+        {"id": i, "label": label, "state": state, "detail": detail, "fix": fix})
+
+    # Kismet
+    poll = cfg.getint("detect", "poll_seconds", fallback=5)
+    ok_ts = float(meta_get(db, "kismet_ok", 0) or 0)
+    fail = meta_get(db, "kismet_fail")
+    kismet_down = False
+    if fail:
+        since, _, msg = fail.partition("|")
+        kismet_down = True
+        add("kismet", "Kismet", "bad", f"Cannot reach Kismet since {ago(float(since or 0))}: {msg}",
+            "systemctl status kismet; check [kismet] url, user and password in config.ini")
+    elif not ok_ts:
+        kismet_down = True
+        add("kismet", "Kismet", "warn", "The watcher has not polled Kismet yet.", "systemctl status tripline-watcher")
+    elif now - ok_ts > max(30, poll * 6):
+        kismet_down = True
+        add("kismet", "Kismet", "bad", f"The watcher stopped polling (last good poll {ago(ok_ts)}).",
+            "systemctl status tripline-watcher; journalctl -u tripline-watcher -n 40")
+    else:
+        add("kismet", "Kismet", "ok", f"Polling normally (last poll {ago(ok_ts)}).")
+
+    # Wi-Fi and Bluetooth
+    try:
+        sources = json.loads(meta_get(db, "kismet_sources", "[]") or "[]")
+    except ValueError:
+        sources = []
+    for kind, label in (("wifi", "Wi-Fi"), ("bt", "Bluetooth")):
+        srcs = [x for x in sources if x.get("kind") == kind]
+        rows = [r for r in db.execute("SELECT mac, phy FROM devices WHERE last_seen>=?", (now - 300,))
+                if is_bt(r[1]) == (kind == "bt")]
+        heard = len(rows)
+        if kismet_down:
+            add(kind, label, "warn", "Unknown while Kismet is unreachable.")
+        elif not sources:
+            add(kind, label, "warn", "Kismet has not reported its data sources yet.")
+        elif not srcs:
+            if kind == "bt":
+                add(kind, label, "off", "No Bluetooth source configured in Kismet.",
+                    "see the Bluetooth part of the README, then re-run install.sh with --bt-iface")
+            else:
+                add(kind, label, "bad", "No Wi-Fi source configured in Kismet.", "python3 watcher.py doctor")
+        elif any(not x.get("running") for x in srcs):
+            names = ", ".join(x["iface"] for x in srcs if not x.get("running"))
+            add(kind, label, "bad", f"Source not running: {names}.", "python3 watcher.py doctor; check the adapter and kismet_site.conf")
+        elif not heard:
+            add(kind, label, "warn", "Running, but no devices heard in the last 5 minutes.")
+        else:
+            detail = f"{heard} {'device' if heard == 1 else 'devices'} heard in the last 5 minutes."
+            state, fix = "ok", ""
+            if kind == "bt":
+                heard_macs = {r[0] for r in rows}
+                with_sig = {m for (m,) in db.execute("SELECT DISTINCT mac FROM sightings WHERE ts>=?", (now - 600,))
+                            if m in heard_macs}
+                if not with_sig:
+                    state = "warn"
+                    detail += (" None has a signal reading, so they are listed but cannot be plotted or alert. "
+                               "The built-in Pi radio often reports none; a dedicated adapter may fix it.")
+                    fix = "python3 watcher.py doctor"
+            add(kind, label, state, detail, fix)
+
+    # SDR (tyre sensors)
+    if cfg.getboolean("vehicles", "enabled", fallback=False):
+        r = radio_status(db, now)
+        text = {"ok": ("ok", f"Decoder running; last message {ago(r['last'] or 0)}, {r['total']} since it started.", ""),
+                "quiet": ("warn", "Decoder running but nothing decoded yet. Normal for the first minutes.", ""),
+                "failed": ("bad", f"Decoder is failing (exit code {r['exit_code']}).", "journalctl -u tripline-tpms -n 40 --no-pager"),
+                "stopped": ("bad", "The tyre-sensor service is not running.", "systemctl status tripline-tpms"),
+                "never": ("bad", "The tyre-sensor service has not started the decoder.", "systemctl status tripline-tpms")}[r["state"]]
+        add("sdr", "SDR", *text)
+
+    # Alert delivery
+    chans = []
+    if cfg.get("ntfy", "topic", fallback="").strip():
+        chans.append("ntfy")
+    if cfg.get("webhook", "url", fallback="").strip():
+        chans.append("webhook")
+    if not chans:
+        add("alerts", "Alerts", "off", "No ntfy topic or webhook is set, so alerts appear only on this dashboard.",
+            "set [ntfy] topic in config.ini")
+    else:
+        bad, never, lines = [], [], []
+        for c in chans:
+            ts, _, rest = (meta_get(db, "notify_" + c) or "").partition("|")
+            res, _, err = rest.partition("|")
+            if not ts:
+                never.append(c)
+            elif res != "ok":
+                bad.append(f"{c} failed {ago(float(ts))}: {err}")
+            else:
+                lines.append(f"{c} delivered {ago(float(ts))}")
+        if bad:
+            add("alerts", "Alerts", "bad", "; ".join(bad), "send a test alert; check the topic or URL in config.ini")
+        elif never:
+            add("alerts", "Alerts", "warn", ", ".join(never) + " configured, nothing delivered yet. Send a test alert to check it.")
+        else:
+            add("alerts", "Alerts", "ok", "; ".join(lines) + ".")
+    return out
+
+
 def run(cfg, db, once=False):
     poll = cfg.getint("detect", "poll_seconds")
     dwell = cfg.getint("detect", "dwell_seconds")
@@ -457,9 +615,11 @@ def run(cfg, db, once=False):
             if kismet_fail_since is not None:
                 log("Kismet reachable again")
             kismet_fail_since = None
+            record_poll(cfg, db, now, None)
         except Exception as exc:
             log(f"Kismet poll failed: {exc}")
             kismet_fail_since = kismet_fail_since or now
+            record_poll(cfg, db, now, (kismet_fail_since, str(exc)[:200]))
             if now - kismet_fail_since > 600 and now - alerted.get("down", 0) > 3600:
                 notify(cfg, db, "Tripline sensor down", "Kismet unreachable for 10+ minutes",
                        "high", "warning")
