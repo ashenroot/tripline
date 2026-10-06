@@ -504,6 +504,7 @@ user so it reads the same config:
 | `associated BSSID present on ...` | Whether Kismet reports which access point a client is attached to. My network and `home_bssids` depend on it. |
 | `probed SSIDs present on ...` | Devices sending named probes. A low number is normal. |
 | `Bluetooth identifying fields` | Which fields in Kismet's Bluetooth records identify devices. |
+| `SDR (tyre-pressure sensors)` | Only when `[vehicles] enabled = true`. Whether the decoder is running and when it last decoded any message, from any device (a weather station counts). Shows the same status line as the Vehicles panel. |
 
 `doctor --dump out.json` saves three raw Bluetooth and three raw Wi-Fi device records. They
 contain MAC addresses and names of nearby devices, so review the file before sharing it. To share
@@ -517,7 +518,7 @@ Common problems:
 | Bluetooth devices are missing | They may be hidden by the default filters. On the Devices tab choose Filter: All and Radio: Bluetooth only, then sort by Last seen. A phone stops advertising when idle and locked. Opening its Bluetooth settings makes it advertise. |
 | Two computers show different dashboards | The Known and Rotating chips are saved per browser. |
 | Devices stay unknown after My network | Add each BSSID of the access point (siblings are matched when they differ in the middle bytes or the first byte's low bits). A client is attached to a particular BSSID, and Kismet only reports the association when it hears the client's data traffic on its channel. |
-| No tyre-sensor (TPMS) detections | Check `journalctl -u tripline-tpms -n 40`. `usb_open error -3` means the service user cannot open the dongle: re-run the installer (it writes `/etc/udev/rules.d/60-tripline-rtlsdr.rules`), unplug and replug the dongle, then `sudo systemctl restart tripline-tpms`. `No supported devices found` means the dongle is missing or taken by the kernel TV driver (the installer blacklists it; reboot once). Parked cars are silent: sensors transmit only while the wheels turn, and only within tens of feet. |
+| No tyre-sensor (TPMS) detections | The Vehicles panel (Devices tab) shows a status line: green means the radio decoded something recently, so the dongle and software work and it is only waiting for a car; red gives the command to run. Check `journalctl -u tripline-tpms -n 40`. `usb_open error -3` means the service user cannot open the dongle: re-run the installer (it writes `/etc/udev/rules.d/60-tripline-rtlsdr.rules`), unplug and replug the dongle, then `sudo systemctl restart tripline-tpms`. `No supported devices found` means the dongle is missing or taken by the kernel TV driver (the installer blacklists it; reboot once). Parked cars are silent: sensors transmit only while the wheels turn, and only within tens of feet. |
 | The dashboard feels slow | Raise `sighting_interval_seconds`, or lower `retention_days`. |
 | No hostnames | A passive sensor cannot read them: they travel inside encrypted traffic. Bluetooth names and access-point names are shown when advertised. A known-device source such as UniFi can supply names. |
 

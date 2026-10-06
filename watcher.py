@@ -156,6 +156,39 @@ def meta_set(db, key, value):
     db.commit()
 
 
+def radio_status(db, now):
+    """Health of the SDR decoder, from what tpms.py records in the meta table.
+
+    state: never (service has not started the decoder), stopped (no heartbeat),
+    failed (decoder exited and has not been restarted successfully), quiet (running,
+    nothing decoded yet), ok (running and has decoded messages).
+    """
+    def num(key):
+        try:
+            return float(meta_get(db, key) or 0)
+        except ValueError:
+            return 0.0
+    started, beat, last, total = num("sdr_started"), num("sdr_beat"), num("sdr_last"), int(num("sdr_total"))
+    exit_ts, _, code = (meta_get(db, "sdr_exit") or "").partition(":")
+    try:
+        exit_ts = float(exit_ts or 0)
+    except ValueError:
+        exit_ts = 0.0
+    if not started:
+        state = "never"
+    elif now - beat > 120:
+        state = "stopped"
+    elif exit_ts >= started:
+        state = "failed"
+    elif last >= started:
+        state = "ok"
+    else:
+        state = "quiet"
+    return {"state": state, "started": int(started) or None, "last": int(last) or None, "total": total,
+            "exit_code": int(code) if code.lstrip("-").isdigit() else None, "exit_at": int(exit_ts) or None,
+            "beat": int(beat) or None}
+
+
 def home_set(cfg, db):
     """BSSIDs of your own networks: [detect] home_bssids plus those added in the web UI."""
     out = {m.strip().lower() for m in cfg.get("detect", "home_bssids", fallback="").split(",") if m.strip()}
@@ -498,6 +531,22 @@ def cmd_doctor(cfg, db, args):
     ok = lambda m: print("  ok    " + m)
     bad = lambda m: print("  FAIL  " + m)
     note = lambda m: print("  note  " + m)
+    if cfg.getboolean("vehicles", "enabled", fallback=False):
+        print("SDR (tyre-pressure sensors)")
+        r, now = radio_status(db, int(time.time())), int(time.time())
+        ago = lambda t: ("%d min ago" % ((now - t) // 60)) if t else "never"
+        if r["state"] == "ok":
+            ok(f"decoder running; last message {ago(r['last'])}, {r['total']} since it started")
+        elif r["state"] == "quiet":
+            note(f"decoder running since {ago(r['started'])} but has decoded nothing yet "
+                 "(normal for the first minutes; a quiet area can stay silent for a long time)")
+        elif r["state"] == "failed":
+            bad(f"decoder is failing (exit code {r['exit_code']}, {ago(r['exit_at'])}); "
+                "run: journalctl -u tripline-tpms -n 40 --no-pager")
+        elif r["state"] == "stopped":
+            bad("tripline-tpms is not running (no heartbeat); run: systemctl status tripline-tpms")
+        else:
+            bad("tripline-tpms has not started the decoder; run: systemctl status tripline-tpms")
     print("Kismet connection")
     try:
         kismet_get(cfg, "/system/status.json")

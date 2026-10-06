@@ -15,11 +15,12 @@ import json
 import shlex
 import subprocess
 import sys
+import threading
 import time
 
 import identity
 import watcher
-from watcher import log, meta_get, notify
+from watcher import log, meta_get, meta_set, notify
 
 DEFAULT_CMD = "rtl_433 -d {device} {freqs} -F json -M level -M time:unix"
 
@@ -81,9 +82,57 @@ def command(cfg):
     return tmpl.format(device=shlex.quote(cfg.get("vehicles", "device", fallback="0")), freqs=fargs)
 
 
-def consume(cfg, db, lines):
+class Radio:
+    """Records decoder health in the meta table so the dashboard and `doctor` can show it."""
+    FLUSH = 10  # seconds between writes while messages stream in
+
+    def __init__(self, db):
+        self.db, self.total, self.flushed = db, 0, 0
+
+    def started(self):
+        self.total, self.flushed = 0, 0
+        meta_set(self.db, "sdr_total", 0)
+        meta_set(self.db, "sdr_started", int(time.time()))
+
+    def heard(self, line, now):
+        """Count any decoded message, whatever device sent it: proof the radio works."""
+        try:
+            ok = isinstance(json.loads(line), dict)
+        except ValueError:
+            ok = False
+        if not ok:
+            return
+        self.total += 1
+        if now - self.flushed >= self.FLUSH:
+            self.flush(now)
+
+    def flush(self, now):
+        meta_set(self.db, "sdr_last", now)
+        meta_set(self.db, "sdr_total", self.total)
+        self.flushed = now
+
+    def exited(self, code):
+        if self.total:
+            self.flush(int(time.time()))
+        meta_set(self.db, "sdr_exit", "%d:%s" % (time.time(), code))
+
+
+def heartbeat(cfg):
+    """Tell the dashboard this service is alive, even while the decoder prints nothing."""
+    db = watcher.db_connect(cfg)
+    while True:
+        try:
+            meta_set(db, "sdr_beat", int(time.time()))
+        except Exception:
+            pass
+        time.sleep(30)
+
+
+def consume(cfg, db, lines, radio=None):
     last_alert, last_purge, recent = {}, 0, {}
     for line in lines:
+        if radio is not None:
+            radio.heard(line, int(time.time()))
         msg = parse(line)
         if msg is None:
             continue
@@ -97,13 +146,17 @@ def consume(cfg, db, lines):
 
 
 def run(cfg, db):
+    radio = Radio(db)
+    threading.Thread(target=heartbeat, args=(cfg,), daemon=True).start()
     while True:
         cmd = command(cfg)
         log(f"starting: {cmd}")
         try:
+            radio.started()
             proc = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE, text=True, bufsize=1)
-            consume(cfg, db, proc.stdout)
+            consume(cfg, db, proc.stdout, radio)
             proc.wait()
+            radio.exited(proc.returncode)
             log(f"decoder exited with {proc.returncode}")
         except FileNotFoundError:
             sys.exit(f"Decoder not found: {shlex.split(cmd)[0]}. Install rtl-433 or set [vehicles] command.")

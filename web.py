@@ -768,8 +768,11 @@ def api_vehicles():
     db = get_db()
     rows = db.execute("SELECT vid,model,sensor_id,first_seen,last_seen,seen_count,known,label,last_rssi,"
                       "last_freq FROM vehicles ORDER BY last_seen DESC LIMIT 200").fetchall()
+    now = int(time.time())
     return jsonify({"enabled": cfg().getboolean("vehicles", "enabled", fallback=False),
-                    "vehicles": [dict(r) for r in rows]})
+                    "radio": dict(watcher.radio_status(db, now),
+                                  last_sensor=max((r["last_seen"] for r in rows), default=None)),
+                    "now": now, "vehicles": [dict(r) for r in rows]})
 
 
 @app.post("/api/vehicles/known")

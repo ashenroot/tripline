@@ -259,6 +259,7 @@ dialog input,dialog select{width:100%;margin-top:4px}
   <div id="veh-wrap" class="hidden">
     <h2>Vehicles</h2>
     <p class="dim" style="margin:0 0 8px">Tyre-pressure sensors heard by the SDR. A car has up to four. They transmit while the wheels turn, so this shows arrivals and departures. Mark your own vehicles known so they stop alerting.</p>
+    <div id="veh-radio" class="dim" style="margin:0 0 8px"></div>
     <div class="tablewrap"><table><tbody id="veh-body"></tbody></table></div>
     <div style="height:18px"></div>
   </div>
@@ -997,12 +998,26 @@ act.addEventListener('pointerleave', () => { tip2.style.display = 'none'; });
 new ResizeObserver(() => { if (lastAct && tab === 'dash') drawActivity(lastAct); }).observe(act);
 
 /* ---------- vehicles ---------- */
+function renderRadio(r, enabled) {
+  const box = $('#veh-radio'); box.replaceChildren();
+  if (!r || !enabled) return;
+  const dot = c => { const i = el('span', null, '\u25CF '); i.style.color = 'var(--' + c + ')'; return i; };
+  const line = (c, t) => { box.appendChild(dot(c)); box.appendChild(document.createTextNode(t)); };
+  const sensor = r.last_sensor ? ' Last tyre sensor heard ' + ago(r.last_sensor) + '.' : ' No tyre sensor heard yet.';
+  if (r.state === 'ok') line('green', 'Radio working. Last message from any device ' + ago(r.last) + ', ' + r.total + ' since the decoder started.' + sensor);
+  else if (r.state === 'quiet') line('amber', 'Radio listening since ' + ago(r.started) + ' but nothing decoded yet. That is normal for the first minutes.' + sensor);
+  else if (r.state === 'failed') line('red', 'The decoder is failing (exit code ' + (r.exit_code === null ? '?' : r.exit_code) + ', ' + ago(r.exit_at) + '). On the Pi run: journalctl -u tripline-tpms -n 40 --no-pager');
+  else if (r.state === 'stopped') line('red', 'The tyre-sensor service is not running (last heartbeat ' + ago(r.beat) + '). On the Pi run: systemctl status tripline-tpms');
+  else line('red', 'The tyre-sensor service has not started the decoder. On the Pi run: systemctl status tripline-tpms');
+}
+
 async function loadVehicles() {
   let d;
   try { d = await api('/api/vehicles'); } catch (e) { return; }
   $('#veh-wrap').classList.toggle('hidden', !d.enabled && !d.vehicles.length);
   const body = $('#veh-body'); body.replaceChildren();
   const now = Date.now() / 1000;
+  renderRadio(d.radio, d.enabled);
   for (const v of d.vehicles) {
     const tr = el('tr');
     const c1 = el('td'); c1.appendChild(el('div', null, v.label || v.model)); c1.appendChild(el('div', 'mono dim', v.vid));

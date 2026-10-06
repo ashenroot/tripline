@@ -123,6 +123,66 @@ class RunWithFakeDecoder(unittest.TestCase):
             db.close()
 
 
+class RadioHealth(unittest.TestCase):
+    def setUp(self):
+        self.t = tmpdir()
+        self.cfg = make_cfg(self.t.name)
+        self.db = watcher.db_connect(self.cfg)
+
+    def tearDown(self):
+        self.db.close()
+        self.t.cleanup()
+
+    def status(self, now):
+        return watcher.radio_status(self.db, now)["state"]
+
+    def test_never_started(self):
+        self.assertEqual(self.status(1000), "never")
+
+    def test_quiet_then_ok_after_any_message(self):
+        radio = tpms.Radio(self.db)
+        radio.started()
+        now = int(__import__("time").time())
+        watcher.meta_set(self.db, "sdr_beat", now)
+        self.assertEqual(self.status(now), "quiet")
+        # a weather station, not a tyre sensor: still proves the radio works
+        tpms.consume(self.cfg, self.db, [json.dumps({"model": "Acurite-Tower", "id": 5, "temperature_C": 20})], radio)
+        self.assertEqual(self.status(now), "ok")
+        self.assertEqual(watcher.radio_status(self.db, now)["total"], 1)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM vehicles").fetchone()[0], 0)
+
+    def test_garbage_lines_do_not_count(self):
+        radio = tpms.Radio(self.db)
+        radio.started()
+        now = int(__import__("time").time())
+        watcher.meta_set(self.db, "sdr_beat", now)
+        tpms.consume(self.cfg, self.db, ["not json", "[1]"], radio)
+        self.assertEqual(self.status(now), "quiet")
+
+    def test_failed_decoder_and_recovery(self):
+        radio = tpms.Radio(self.db)
+        now = int(__import__("time").time())
+        radio.started()
+        watcher.meta_set(self.db, "sdr_beat", now)
+        radio.exited(2)
+        r = watcher.radio_status(self.db, now)
+        self.assertEqual((r["state"], r["exit_code"]), ("failed", 2))
+        watcher.meta_set(self.db, "sdr_started", now + 10)  # restarted
+        self.assertEqual(self.status(now + 10), "quiet")
+
+    def test_stale_heartbeat_means_service_stopped(self):
+        radio = tpms.Radio(self.db)
+        radio.started()
+        watcher.meta_set(self.db, "sdr_beat", 1000)
+        self.assertEqual(self.status(1000 + 300), "stopped")
+
+    def test_old_message_from_a_previous_run_is_not_ok(self):
+        watcher.meta_set(self.db, "sdr_last", 500)
+        watcher.meta_set(self.db, "sdr_started", 1000)
+        watcher.meta_set(self.db, "sdr_beat", 1000)
+        self.assertEqual(self.status(1010), "quiet")
+
+
 class VehicleApi(unittest.TestCase):
     def setUp(self):
         self.t = tmpdir()
@@ -145,6 +205,11 @@ class VehicleApi(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT known,label FROM vehicles").fetchone(), (1, "Truck"))
         self.client.post("/api/vehicles/known", json={"vid": "Toyota:1a2b3c4d", "known": False}, headers=H)
         self.assertEqual(self.db.execute("SELECT known,label FROM vehicles").fetchone(), (0, None))
+
+    def test_api_reports_radio_state(self):
+        d = self.client.get("/api/vehicles").get_json()
+        self.assertEqual(d["radio"]["state"], "never")
+        self.assertEqual(d["radio"]["last_sensor"], 1000)
 
     def test_unknown_vid_404_and_csrf(self):
         self.assertEqual(self.client.post("/api/vehicles/known", json={"vid": "x"}, headers=H).status_code, 404)
