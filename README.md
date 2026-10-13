@@ -449,6 +449,18 @@ and leaving, and does not see parked ones.
 Unverified on real hardware: the `rtl_433` JSON fields (`type: TPMS`, `pressure_*`), the
 behavior of dual-band hopping on a single dongle, and the USB detection in the installer.
 
+### Radio probes (`tools/`)
+
+Standalone scripts for trying out radio ideas before they become part of Tripline. They write to the
+terminal or a log file and do not touch the database.
+
+- `tools/lora_probe.py` lists what a Meshtastic node on USB hears (sender, hop count, signal), with a
+  verdict on whether packets from channels you hold no key for reach the computer. Stock firmware does not
+  pass them on.
+- `tools/frs_probe.py` logs FRS/GMRS handheld-radio transmissions (channel, duration, relative strength)
+  using the RTL-SDR. It measures energy only and records no audio. The SDR serves one program at a time,
+  so stop `tripline-tpms` while it runs; the instructions are at the top of the file.
+
 ## Entities and link suggestions
 
 Randomized addresses mean one person shows up as many unrelated records. Tripline keeps
